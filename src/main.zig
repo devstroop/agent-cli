@@ -263,8 +263,19 @@ fn planExec(cmd: *cli.Cmd) !void {
 
     try printBanner(cmd.writer, state.session.agent, state.resolved.model_id, state.format_json);
 
+    // Build read-only tools for research-before-planning
+    var params_arena = std.heap.ArenaAllocator.init(allocator);
+    defer params_arena.deinit();
+    const plan_tools = [_][]const u8{ "read", "glob", "grep", "webfetch" };
+    const tools = try processor.buildToolDefsFiltered(allocator, params_arena.allocator(), &plan_tools);
+    defer {
+        for (tools) |*t| t.deinit(allocator);
+        allocator.free(tools);
+    }
+
     var provider = llm.Provider.init(allocator, cmd.io, state.resolved.prov_cfg, state.resolved.api_key);
-    const result = processor.processAsk(allocator, cmd.io, &provider, &state.session, state.resolved.model_id, state.format_json, cmd.writer, state.temperature, state.max_tokens, state.top_p, state.variant) catch |err| {
+    const reader = if (state.skip_perms) null else cmd.reader;
+    const result = processor.processTurnWithTools(allocator, cmd.io, &provider, &state.session, state.resolved.model_id, state.skip_perms, state.format_json, false, cmd.writer, reader, state.temperature, state.max_tokens, state.top_p, state.variant, tools, &.{}) catch |err| {
         if (err == error.LlmError) {
             try cmd.writer.print("\n\x1b[31mError:\x1b[0m API request failed (rate limited or server error). Try again later.\n", .{});
             return;
@@ -330,7 +341,17 @@ fn reviewExec(cmd: *cli.Cmd) !void {
     try state.session.addMessage(.{ .role = try allocator.dupe(u8, "user"), .content = analysis_text });
 
     var provider = llm.Provider.init(allocator, cmd.io, state.resolved.prov_cfg, state.resolved.api_key);
-    const result = processor.processAsk(allocator, cmd.io, &provider, &state.session, state.resolved.model_id, state.format_json, cmd.writer, state.temperature, state.max_tokens, state.top_p, state.variant) catch |err| {
+    // Build review tools: read-only + git diff snapshot
+    var params_arena = std.heap.ArenaAllocator.init(allocator);
+    defer params_arena.deinit();
+    const review_tools = [_][]const u8{ "read", "glob", "grep", "webfetch", "snapshot" };
+    const tools = try processor.buildToolDefsFiltered(allocator, params_arena.allocator(), &review_tools);
+    defer {
+        for (tools) |*t| t.deinit(allocator);
+        allocator.free(tools);
+    }
+    const reader = if (state.skip_perms) null else cmd.reader;
+    const result = processor.processTurnWithTools(allocator, cmd.io, &provider, &state.session, state.resolved.model_id, state.skip_perms, state.format_json, false, cmd.writer, reader, state.temperature, state.max_tokens, state.top_p, state.variant, tools, &.{}) catch |err| {
         if (err == error.LlmError) {
             try cmd.writer.print("\n\x1b[31mError:\x1b[0m API request failed (rate limited or server error). Try again later.\n", .{});
             return;
@@ -344,15 +365,15 @@ fn reviewExec(cmd: *cli.Cmd) !void {
 
 fn editExec(cmd: *cli.Cmd) !void {
     const allocator = cmd.allocator;
-    var state = try setupExec(cmd, "build");
+    var state = try setupExec(cmd, "edit");
     defer state.deinit(allocator);
 
     try printBanner(cmd.writer, state.session.agent, state.resolved.model_id, state.format_json);
 
-    // Build filtered tool defs (read-only + write tools)
+    // Build filtered tool defs (read + write, no bash/MCP/web)
     var params_arena = std.heap.ArenaAllocator.init(allocator);
     defer params_arena.deinit();
-    const edit_tools = [_][]const u8{ "read", "write", "edit", "glob", "grep" };
+    const edit_tools = [_][]const u8{ "read", "write", "editFile", "glob", "grep" };
     const tools = try processor.buildToolDefsFiltered(allocator, params_arena.allocator(), &edit_tools);
     defer {
         for (tools) |*t| t.deinit(allocator);

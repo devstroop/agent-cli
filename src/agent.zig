@@ -79,6 +79,9 @@ fn systemPrompt(comptime name: []const u8) []const u8 {
     if (std.mem.eql(u8, name, "ask")) {
         return "You are a helpful assistant. Answer questions directly and concisely. You do not have access to tools — respond with your knowledge alone.";
     }
+    if (std.mem.eql(u8, name, "edit")) {
+        return "You are an editing assistant. You have access to read, write, editFile, glob, and grep tools. Make targeted, precise edits to files. You do NOT have access to bash, web search, or MCP tools. Focus on the specific file(s) the user asked you to modify.";
+    }
     if (std.mem.eql(u8, name, "summary")) {
         return "You are a summarization assistant. Provide clear, concise summaries of the given content, capturing key points and decisions.";
     }
@@ -97,6 +100,7 @@ pub fn getBuiltin(allocator: std.mem.Allocator, name: []const u8) !?Agent {
         .{ .name = "build", .mode = .primary, .desc = "The default agent. Executes tools based on configured permissions." },
         .{ .name = "plan", .mode = .primary, .desc = "Planning agent for breaking down tasks." },
         .{ .name = "ask", .mode = .primary, .desc = "Quick answer agent — no tools, just knowledge." },
+        .{ .name = "edit", .mode = .primary, .desc = "Editing agent — read/write/search tools, no bash/MCP/web." },
         .{ .name = "review", .mode = .primary, .desc = "Review agent for analyzing sessions and providing assessment." },
         .{ .name = "summary", .mode = .primary, .desc = "Summarization agent." },
         .{ .name = "title", .mode = .primary, .desc = "Title generation agent." },
@@ -187,7 +191,7 @@ pub fn loadAgentFiles(allocator: std.mem.Allocator, io: std.Io) ![]Agent {
 
 /// List all built-in primary agent names.
 pub fn listPrimary(allocator: std.mem.Allocator) ![][]const u8 {
-    const names = [_][]const u8{ "build", "plan", "ask", "review", "summary", "title", "compaction" };
+    const names = [_][]const u8{ "build", "plan", "ask", "edit", "review", "summary", "title", "compaction" };
     var result = try allocator.alloc([]const u8, names.len);
     for (names, 0..) |n, i| {
         result[i] = try allocator.dupe(u8, n);
@@ -270,7 +274,7 @@ test "containsIgnoreCase: basic" {
     try testing.expect(containsIgnoreCase("Claude-Opus", "claude"));
 }
 
-test "listPrimary: returns 7 names" {
+test "listPrimary: returns 8 names" {
     const testing = @import("std").testing;
     const allocator = testing.allocator;
     const list = try listPrimary(allocator);
@@ -278,6 +282,6 @@ test "listPrimary: returns 7 names" {
         for (list) |n| allocator.free(n);
         allocator.free(list);
     }
-    try testing.expectEqual(list.len, 7);
+    try testing.expectEqual(list.len, 8);
     try testing.expectEqualStrings(list[0], "build");
 }

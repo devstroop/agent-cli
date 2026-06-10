@@ -88,15 +88,18 @@ fn checkStopHook(content: []const u8, finish_reason: ?[]const u8) bool {
                 return false;
             }
             // Check for obvious truncation: trailing punctuation mid-thought
-            if (content.len > 0) {
-                const trimmed = std.mem.trimRight(u8, content, " \t\n\r");
-                if (trimmed.len > 0) {
-                    const last = trimmed[trimmed.len - 1];
-                    // Ends with mid-thought punctuation or incomplete sentence
-                    if (last == ',' or last == '-' or last == '|') {
-                        std.log.debug("Stop hook: ends with mid-thought '{c}'", .{last});
-                        return false;
-                    }
+            // Trim trailing whitespace manually (std.mem.trimRight removed in 0.16)
+            var end = content.len;
+            while (end > 0) : (end -= 1) {
+                const c = content[end - 1];
+                if (c != ' ' and c != '\t' and c != '\n' and c != '\r') break;
+            }
+            if (end > 0) {
+                const last = content[end - 1];
+                // Ends with mid-thought punctuation or incomplete sentence
+                if (last == ',' or last == '-' or last == '|') {
+                    std.log.debug("Stop hook: ends with mid-thought '{c}'", .{last});
+                    return false;
                 }
             }
         }
