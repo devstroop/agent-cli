@@ -1,0 +1,10 @@
+.{
+    .name = .agent,
+    .version = "0.1.0",
+    .fingerprint = 0x268b9c9d989d121d,
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
