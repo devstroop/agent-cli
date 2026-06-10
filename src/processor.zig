@@ -515,7 +515,9 @@ pub fn processTurnWithTools(
                 defer tool_result.deinit(allocator);
                 const is_err = tool_result.exit_code != 0;
 
-                try session.addToolResult(tc.id, tool_result.stdout, is_err);
+                // Expand !command lines in tool output (bash ! expansion)
+                const expanded = try expandBangCommands(allocator, io, tool_result.stdout);
+                try session.addToolResult(tc.id, expanded, is_err);
             }
             continue;
         }
@@ -536,6 +538,50 @@ pub fn processTurnWithTools(
 
         return ProcessResult{ .text = try allocator.dupe(u8, response.content), .exit_reason = try allocator.dupe(u8, "stop"), .input_tokens = input_tokens, .output_tokens = output_tokens };
     }
+}
+
+/// Expand !command lines in tool output — runs inline bash commands
+/// and injects their output prefixed with "# " (Claude Code pattern).
+/// Lines starting with "!" (unescaped) are executed; their output replaces the line.
+fn expandBangCommands(allocator: std.mem.Allocator, io: std.Io, stdout: []const u8) ![]const u8 {
+    // Fast path: no bang commands
+    if (std.mem.indexOf(u8, stdout, "\n!")) |_| {} else {
+        return stdout;
+    }
+
+    var result = std.ArrayList(u8).initCapacity(allocator, stdout.len) catch unreachable;
+    var line_iter = std.mem.splitScalar(u8, stdout, '\n');
+    var first = true;
+    while (line_iter.next()) |line| {
+        if (!first) try result.append(allocator, '\n');
+        first = false;
+
+        if (line.len > 0 and line[0] == '!') {
+            const cmd = line[1..];
+            // Echo the command line
+            try result.appendSlice(allocator, line);
+
+            // Run via bash
+            var cmd_result = tool.bash(allocator, io, cmd) catch {
+                try result.appendSlice(allocator, "\n# (error: command failed)");
+                continue;
+            };
+            defer cmd_result.deinit(allocator);
+
+            const trimmed = std.mem.trim(u8, cmd_result.stdout, " \t\r\n");
+            if (trimmed.len > 0) {
+                var out_lines = std.mem.splitScalar(u8, trimmed, '\n');
+                while (out_lines.next()) |out_line| {
+                    try result.appendSlice(allocator, "\n# ");
+                    try result.appendSlice(allocator, out_line);
+                }
+            }
+        } else {
+            try result.appendSlice(allocator, line);
+        }
+    }
+
+    return result.toOwnedSlice(allocator);
 }
 
 fn buildToolDefs(allocator: std.mem.Allocator, params_arena: std.mem.Allocator) ![]llm.ToolDef {
