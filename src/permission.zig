@@ -47,7 +47,7 @@ fn globMatch(pattern: []const u8, input: []const u8) bool {
 /// Permission manager.
 pub const Manager = struct {
     allocator: std.mem.Allocator,
-    rules: std.ArrayListUnmanaged(Rule) = .{},
+    rules: std.ArrayListUnmanaged(Rule) = .{ .items = &.{}, .capacity = 0 },
 
     pub fn init(allocator: std.mem.Allocator) Manager {
         return Manager{ .allocator = allocator };

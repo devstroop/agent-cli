@@ -93,6 +93,9 @@ pub fn processTurn(
         allocator.free(tools);
     }
 
+    var perm_manager = permission_mod.Manager.init(allocator);
+    defer perm_manager.deinit();
+
     var turn: u32 = 0;
     var input_tokens: u64 = 0;
     var output_tokens: u64 = 0;
@@ -208,9 +211,13 @@ pub fn processTurn(
                 try writer.flush();
             }
             for (response.tool_calls) |tc| {
-                // Check permission
                 if (!skip_perms) {
-                    const allowed = try checkPermissionInteractive(allocator, writer, reader, tc);
+                    const action = perm_manager.evaluate(tc.name, tc.id);
+                    const allowed = switch (action) {
+                        .allow => true,
+                        .deny => false,
+                        .ask => try checkPermissionInteractive(allocator, &perm_manager, writer, reader, tc),
+                    };
                     if (!allowed) {
                         try session.addToolResult(tc.id, "Permission denied by user", true);
                         return ProcessResult{ .text = try allocator.dupe(u8, ""), .exit_reason = try allocator.dupe(u8, "permission_denied"), .input_tokens = input_tokens, .output_tokens = output_tokens };
@@ -347,10 +354,9 @@ fn executeTool(allocator: std.mem.Allocator, io: std.Io, writer: *std.Io.Writer,
     return tool.Result{ .stdout = "", .stderr = err_msg, .exit_code = 1 };
 }
 
-fn checkPermissionInteractive(allocator: std.mem.Allocator, writer: *std.Io.Writer, reader: ?*std.Io.Reader, tc: llm.ToolCall) !bool {
+fn checkPermissionInteractive(allocator: std.mem.Allocator, manager: *permission_mod.Manager, writer: *std.Io.Writer, reader: ?*std.Io.Reader, tc: llm.ToolCall) !bool {
     const rdr = reader orelse return true;
     try writer.print("Allow \x1b[1m{s}\x1b[0m(", .{tc.name});
-    // Parse and display arguments
     const args_parsed = std.json.parseFromSlice(std.json.Value, allocator, tc.arguments, .{}) catch {
         try writer.print("...", .{});
         return true;
@@ -379,7 +385,10 @@ fn checkPermissionInteractive(allocator: std.mem.Allocator, writer: *std.Io.Writ
     if (input.len == 0) return false;
     switch (input[0]) {
         'y', 'Y' => return true,
-        'a', 'A' => return true,
+        'a', 'A' => {
+            try manager.addRule(.{ .permission = try allocator.dupe(u8, tc.name), .pattern = try allocator.dupe(u8, "*"), .action = .allow });
+            return true;
+        },
         else => return false,
     }
 }
