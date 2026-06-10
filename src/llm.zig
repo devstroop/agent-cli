@@ -158,8 +158,8 @@ pub const Provider = struct {
         while (attempt < 3) : (attempt += 1) {
             if (attempt > 0) {
                 // Exponential backoff: 1s, 2s, 4s
-                const delay_ns: u64 = (@as(u64, 1) << @intCast(attempt - 1)) * std.time.ns_per_s;
-                const ts = std.c.timespec{ .sec = @intCast(delay_ns / std.time.ns_per_s), .nsec = @intCast(delay_ns % std.time.ns_per_s) };
+                const delay_ns: u64 = (@as(u64, 1) << @intCast(attempt - 1)) * 1_000_000_000;
+                const ts = std.c.timespec{ .sec = @intCast(delay_ns / 1_000_000_000), .nsec = @intCast(delay_ns % 1_000_000_000) };
                 _ = std.c.nanosleep(&ts, null);
             }
             const result = self.sendRequest(req, false, &last_err_body);
@@ -243,8 +243,8 @@ pub const Provider = struct {
         var attempt: usize = 0;
         while (attempt < 3) : (attempt += 1) {
             if (attempt > 0) {
-                const delay_ns: u64 = (@as(u64, 1) << @intCast(attempt - 1)) * std.time.ns_per_s;
-                const ts = std.c.timespec{ .sec = @intCast(delay_ns / std.time.ns_per_s), .nsec = @intCast(delay_ns % std.time.ns_per_s) };
+                const delay_ns: u64 = (@as(u64, 1) << @intCast(attempt - 1)) * 1_000_000_000;
+                const ts = std.c.timespec{ .sec = @intCast(delay_ns / 1_000_000_000), .nsec = @intCast(delay_ns % 1_000_000_000) };
                 _ = std.c.nanosleep(&ts, null);
             }
             const result = self.streamRequest(req, writer, format_json, &last_err_body);
