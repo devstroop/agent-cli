@@ -1,5 +1,14 @@
 const std = @import("std");
 const Io = std.Io;
+const native_os = @import("builtin").os.tag;
+
+/// Windows console TTY detection via raw kernel32 externs.
+/// Zig 0.16's std lib does not expose GetStdHandle / STD_INPUT_HANDLE.
+const Win32Console = struct {
+    extern "kernel32" fn GetStdHandle(nStdHandle: u32) callconv(.winapi) ?*anyopaque;
+    extern "kernel32" fn GetConsoleMode(hConsoleHandle: ?*anyopaque, lpMode: *u32) callconv(.winapi) i32;
+    const STD_INPUT_HANDLE: u32 = @bitCast(@as(i32, -10));
+};
 
 const cli = @import("cli.zig");
 const config_mod = @import("config.zig");
@@ -322,13 +331,17 @@ fn resolveAgent(allocator: std.mem.Allocator, config_agents: ?std.StringHashMap(
     return (try agent_mod.getBuiltin(allocator, "build")).?;
 }
 
+fn stdinIsTty() bool {
+    if (native_os == .windows) {
+        const handle = Win32Console.GetStdHandle(Win32Console.STD_INPUT_HANDLE) orelse return false;
+        var mode: u32 = 0;
+        return Win32Console.GetConsoleMode(handle, &mode) != 0;
+    }
+    return std.c.isatty(std.posix.STDIN_FILENO) != 0;
+}
+
 fn readStdinPipe(reader: *Io.Reader, allocator: std.mem.Allocator) !?[]const u8 {
-    const native_os = @import("builtin").os.tag;
-    const stdin_fd: std.c.fd_t = if (native_os == .windows)
-        std.os.windows.GetStdHandle(std.os.windows.STD_INPUT_HANDLE)
-    else
-        std.posix.STDIN_FILENO;
-    if (std.c.isatty(stdin_fd) != 0) return null;
+    if (stdinIsTty()) return null;
     var list = try std.ArrayList(u8).initCapacity(allocator, 4096);
     defer list.deinit(allocator);
     try reader.appendRemainingUnlimited(allocator, &list);
