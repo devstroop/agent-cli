@@ -39,6 +39,6 @@ jobs:
         run: |
           cd zig-out/bin
           zip ../../agent-${{ matrix.target }}.zip agent.exe
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: agent-${{ matrix.target }}.*
