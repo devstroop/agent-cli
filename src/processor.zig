@@ -399,3 +399,36 @@ fn writeJsonLine(writer: *std.Io.Writer, allocator: std.mem.Allocator, value: an
     try writer.print("{s}\n", .{json_str});
     try writer.flush();
 }
+
+test "permission manager: addRule and evaluate" {
+    const testing = @import("std").testing;
+    const allocator = testing.allocator;
+
+    var man = permission_mod.Manager.init(allocator);
+    defer man.deinit();
+
+    try man.addRule(.{ .permission = "bash", .pattern = "*", .action = .allow });
+    try testing.expectEqual(man.evaluate("bash", "echo anything"), .allow);
+    try testing.expectEqual(man.evaluate("read", "/tmp/test.txt"), .ask);
+}
+
+test "processTurn permission manager evaluate flow" {
+    const testing = @import("std").testing;
+    const allocator = testing.allocator;
+
+    var man = permission_mod.Manager.init(allocator);
+    defer man.deinit();
+
+    try testing.expectEqual(man.evaluate("bash", "echo hi"), .ask);
+
+    try man.addRule(.{ .permission = "bash", .pattern = "*", .action = .deny });
+    try testing.expectEqual(man.evaluate("bash", "echo hi"), .deny);
+
+    var man2 = permission_mod.Manager.init(allocator);
+    defer man2.deinit();
+    try man2.addRule(.{ .permission = "bash", .pattern = "*", .action = .allow });
+    try man2.addRule(.{ .permission = "bash", .pattern = "rm *", .action = .deny });
+    try testing.expectEqual(man2.evaluate("bash", "rm important.txt"), .allow);
+
+    try testing.expectEqual(man2.evaluate("write", "/tmp/test"), .ask);
+}

@@ -106,3 +106,21 @@ test "Manager evaluate" {
     try testing.expectEqual(man.evaluate("read", "/etc/passwd"), .ask);
     try testing.expectEqual(man.evaluate("write", "/tmp/test"), .ask);
 }
+
+test "Manager: addRule then evaluate with same permission" {
+    const testing = @import("std").testing;
+    var man = Manager.init(testing.allocator);
+    defer man.deinit();
+
+    try man.addRule(.{ .permission = "bash", .pattern = "*", .action = .allow });
+    try testing.expectEqual(man.evaluate("bash", "echo hello"), .allow);
+}
+
+test "Manager: addRule then evaluate with different permission" {
+    const testing = @import("std").testing;
+    var man = Manager.init(testing.allocator);
+    defer man.deinit();
+
+    try man.addRule(.{ .permission = "bash", .pattern = "*", .action = .allow });
+    try testing.expectEqual(man.evaluate("read", "/tmp/test.txt"), .ask);
+}

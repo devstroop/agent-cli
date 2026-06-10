@@ -696,3 +696,133 @@ test "processSSEData usage" {
     try testing.expectEqual(input_tokens.?, 15);
     try testing.expectEqual(output_tokens.?, 7);
 }
+
+test "buildRequestBody: assistant with tool_calls, empty content" {
+    const testing = @import("std").testing;
+    const allocator = testing.allocator;
+    var cfg = config_mod.ProviderConfig{
+        .name = try allocator.dupe(u8, "test"),
+        .npm = try allocator.dupe(u8, "@test/provider"),
+        .options = .{ .baseURL = try allocator.dupe(u8, "https://example.com/v1") },
+    };
+    defer cfg.deinit(allocator);
+    var provider = Provider.init(allocator, undefined, cfg, null);
+    const req = ChatRequest{
+        .model = "m",
+        .messages = &.{
+            .{
+                .role = "assistant",
+                .content = "",
+                .tool_calls = &.{
+                    .{ .id = "call_x", .name = "bash", .arguments = "{\"command\":\"ls\"}" },
+                },
+            },
+        },
+    };
+    var body: ?[]const u8 = null;
+    try provider.buildRequestBody(req, false, &body);
+    defer if (body) |b| allocator.free(b);
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, body.?, .{});
+    defer parsed.deinit();
+    const msg = parsed.value.object.get("messages").?.array.items[0];
+    try testing.expectEqualStrings(msg.object.get("content").?.string, "");
+    try testing.expect(msg.object.get("tool_calls") != null);
+}
+
+test "processSSEData: tool call id from delta" {
+    const testing = @import("std").testing;
+    const allocator = testing.allocator;
+
+    var content_buf = std.ArrayList(u8).initCapacity(allocator, 128) catch unreachable;
+    defer content_buf.deinit(allocator);
+    var tool_calls_arr = std.ArrayList(ToolCallAccum).initCapacity(allocator, 0) catch unreachable;
+    defer {
+        for (tool_calls_arr.items) |*tc| tc.deinit(allocator);
+        tool_calls_arr.deinit(allocator);
+    }
+    var finish_reason: ?[]const u8 = null;
+    var input_tokens: ?u64 = null;
+    var output_tokens: ?u64 = null;
+
+    const data =
+        \\{"id":"x","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_abc123","type":"function","function":{"name":"bash","arguments":""}}]},"finish_reason":null}]}
+    ;
+    try processSSEData(allocator, &content_buf, &tool_calls_arr, &finish_reason, &input_tokens, &output_tokens, data, undefined, false);
+
+    try testing.expectEqual(tool_calls_arr.items.len, 1);
+    try testing.expectEqualStrings(tool_calls_arr.items[0].id, "call_abc123");
+    try testing.expectEqualStrings(tool_calls_arr.items[0].name, "bash");
+}
+
+test "processSSEData: tool call name from separate chunk" {
+    const testing = @import("std").testing;
+    const allocator = testing.allocator;
+
+    var content_buf = std.ArrayList(u8).initCapacity(allocator, 128) catch unreachable;
+    defer content_buf.deinit(allocator);
+    var tool_calls_arr = std.ArrayList(ToolCallAccum).initCapacity(allocator, 0) catch unreachable;
+    defer {
+        for (tool_calls_arr.items) |*tc| tc.deinit(allocator);
+        tool_calls_arr.deinit(allocator);
+    }
+    var finish_reason: ?[]const u8 = null;
+    var input_tokens: ?u64 = null;
+    var output_tokens: ?u64 = null;
+
+    const chunk1 =
+        \\{"id":"x","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_xyz","type":"function","function":{"name":"","arguments":""}}]},"finish_reason":null}]}
+    ;
+    try processSSEData(allocator, &content_buf, &tool_calls_arr, &finish_reason, &input_tokens, &output_tokens, chunk1, undefined, false);
+
+    const chunk2 =
+        \\{"id":"x","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"name":"read","arguments":""}}]},"finish_reason":null}]}
+    ;
+    try processSSEData(allocator, &content_buf, &tool_calls_arr, &finish_reason, &input_tokens, &output_tokens, chunk2, undefined, false);
+
+    try testing.expectEqual(tool_calls_arr.items.len, 1);
+    try testing.expectEqualStrings(tool_calls_arr.items[0].id, "call_xyz");
+    try testing.expectEqualStrings(tool_calls_arr.items[0].name, "read");
+}
+
+test "processSSEData: tool call arguments accumulated across chunks" {
+    const testing = @import("std").testing;
+    const allocator = testing.allocator;
+
+    var content_buf = std.ArrayList(u8).initCapacity(allocator, 128) catch unreachable;
+    defer content_buf.deinit(allocator);
+    var tool_calls_arr = std.ArrayList(ToolCallAccum).initCapacity(allocator, 0) catch unreachable;
+    defer {
+        for (tool_calls_arr.items) |*tc| tc.deinit(allocator);
+        tool_calls_arr.deinit(allocator);
+    }
+    var finish_reason: ?[]const u8 = null;
+    var input_tokens: ?u64 = null;
+    var output_tokens: ?u64 = null;
+
+    const chunk1 =
+        \\{"id":"x","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\\"com"}}]},"finish_reason":null}]}
+    ;
+    try processSSEData(allocator, &content_buf, &tool_calls_arr, &finish_reason, &input_tokens, &output_tokens, chunk1, undefined, false);
+
+    const chunk2 =
+        \\{"id":"x","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"mand\\\":\\\"ls\\\"}"}}]},"finish_reason":null}]}
+    ;
+    try processSSEData(allocator, &content_buf, &tool_calls_arr, &finish_reason, &input_tokens, &output_tokens, chunk2, undefined, false);
+
+    try testing.expectEqual(tool_calls_arr.items.len, 1);
+    const args = try tool_calls_arr.items[0].toOwnedSlice(allocator);
+    defer allocator.free(args);
+    try testing.expectEqualStrings(args, "{\"command\":\"ls\"}");
+}
+
+test "ToolCallAccum.deinit frees owned fields" {
+    const testing = @import("std").testing;
+    const allocator = testing.allocator;
+
+    var tc = try ToolCallAccum.init(allocator, try allocator.dupe(u8, "test_id"), try allocator.dupe(u8, "test_name"));
+    defer tc.deinit(allocator);
+
+    try testing.expectEqualStrings(tc.id, "test_id");
+    try testing.expectEqualStrings(tc.name, "test_name");
+}
