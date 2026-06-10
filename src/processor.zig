@@ -463,6 +463,7 @@ pub fn processTurnWithTools(
                 // Validate tool arguments before execution
                 validateToolArgs(tc) catch |err| {
                     const err_msg = try std.fmt.allocPrint(allocator, "Invalid arguments for {s}: {}", .{ tc.name, err });
+                    defer allocator.free(err_msg);
                     try session.addToolResult(tc.id, err_msg, true);
                     if (!format_json) {
                         try writer.print("  \x1b[33m! {s}\x1b[0m\n", .{err_msg});

@@ -240,7 +240,13 @@ fn askExec(cmd: *cli.Cmd) !void {
     try printBanner(cmd.writer, state.session.agent, state.resolved.model_id, state.format_json);
 
     var provider = llm.Provider.init(allocator, cmd.io, state.resolved.prov_cfg, state.resolved.api_key);
-    const result = try processor.processAsk(allocator, cmd.io, &provider, &state.session, state.resolved.model_id, state.format_json, cmd.writer, state.temperature, state.max_tokens, state.top_p, state.variant);
+    const result = processor.processAsk(allocator, cmd.io, &provider, &state.session, state.resolved.model_id, state.format_json, cmd.writer, state.temperature, state.max_tokens, state.top_p, state.variant) catch |err| {
+        if (err == error.LlmError) {
+            try cmd.writer.print("\n\x1b[31mError:\x1b[0m API request failed (rate limited or server error). Try again later.\n", .{});
+            return;
+        }
+        return err;
+    };
     defer result.deinit(allocator);
 
     try saveAndShare(cmd, allocator, &state.session, state.format_json);
@@ -258,7 +264,13 @@ fn planExec(cmd: *cli.Cmd) !void {
     try printBanner(cmd.writer, state.session.agent, state.resolved.model_id, state.format_json);
 
     var provider = llm.Provider.init(allocator, cmd.io, state.resolved.prov_cfg, state.resolved.api_key);
-    const result = try processor.processAsk(allocator, cmd.io, &provider, &state.session, state.resolved.model_id, state.format_json, cmd.writer, state.temperature, state.max_tokens, state.top_p, state.variant);
+    const result = processor.processAsk(allocator, cmd.io, &provider, &state.session, state.resolved.model_id, state.format_json, cmd.writer, state.temperature, state.max_tokens, state.top_p, state.variant) catch |err| {
+        if (err == error.LlmError) {
+            try cmd.writer.print("\n\x1b[31mError:\x1b[0m API request failed (rate limited or server error). Try again later.\n", .{});
+            return;
+        }
+        return err;
+    };
     defer result.deinit(allocator);
 
     // Write plan to PLAN.md
@@ -318,7 +330,13 @@ fn reviewExec(cmd: *cli.Cmd) !void {
     try state.session.addMessage(.{ .role = try allocator.dupe(u8, "user"), .content = analysis_text });
 
     var provider = llm.Provider.init(allocator, cmd.io, state.resolved.prov_cfg, state.resolved.api_key);
-    const result = try processor.processAsk(allocator, cmd.io, &provider, &state.session, state.resolved.model_id, state.format_json, cmd.writer, state.temperature, state.max_tokens, state.top_p, state.variant);
+    const result = processor.processAsk(allocator, cmd.io, &provider, &state.session, state.resolved.model_id, state.format_json, cmd.writer, state.temperature, state.max_tokens, state.top_p, state.variant) catch |err| {
+        if (err == error.LlmError) {
+            try cmd.writer.print("\n\x1b[31mError:\x1b[0m API request failed (rate limited or server error). Try again later.\n", .{});
+            return;
+        }
+        return err;
+    };
     defer result.deinit(allocator);
 
     try saveAndShare(cmd, allocator, &state.session, state.format_json);
@@ -343,7 +361,13 @@ fn editExec(cmd: *cli.Cmd) !void {
 
     var provider = llm.Provider.init(allocator, cmd.io, state.resolved.prov_cfg, state.resolved.api_key);
     const reader = if (state.skip_perms) null else cmd.reader;
-    const result = try processor.processTurnWithTools(allocator, cmd.io, &provider, &state.session, state.resolved.model_id, state.skip_perms, state.format_json, false, cmd.writer, reader, state.temperature, state.max_tokens, state.top_p, state.variant, tools, &.{});
+    const result = processor.processTurnWithTools(allocator, cmd.io, &provider, &state.session, state.resolved.model_id, state.skip_perms, state.format_json, false, cmd.writer, reader, state.temperature, state.max_tokens, state.top_p, state.variant, tools, &.{}) catch |err| {
+        if (err == error.LlmError) {
+            try cmd.writer.print("\n\x1b[31mError:\x1b[0m API request failed (rate limited or server error). Try again later.\n", .{});
+            return;
+        }
+        return err;
+    };
     defer result.deinit(allocator);
 
     try saveAndShare(cmd, allocator, &state.session, state.format_json);
@@ -378,7 +402,13 @@ fn runExec(cmd: *cli.Cmd) !void {
     // Create provider and run processor loop
     var provider = llm.Provider.init(allocator, cmd.io, state.resolved.prov_cfg, state.resolved.api_key);
     const reader = if (state.skip_perms) null else cmd.reader;
-    const result = try processor.processTurnWithConfig(allocator, cmd.io, &provider, &state.session, state.resolved.model_id, state.skip_perms, state.format_json, show_thinking, cmd.writer, reader, state.temperature, state.max_tokens, state.top_p, state.variant, &state.config);
+    const result = processor.processTurnWithConfig(allocator, cmd.io, &provider, &state.session, state.resolved.model_id, state.skip_perms, state.format_json, show_thinking, cmd.writer, reader, state.temperature, state.max_tokens, state.top_p, state.variant, &state.config) catch |err| {
+        if (err == error.LlmError) {
+            try cmd.writer.print("\n\x1b[31mError:\x1b[0m API request failed (rate limited or server error). Try again later.\n", .{});
+            return;
+        }
+        return err;
+    };
     defer result.deinit(allocator);
 
     try saveAndShare(cmd, allocator, &state.session, state.format_json);

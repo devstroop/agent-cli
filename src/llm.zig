@@ -151,6 +151,30 @@ pub const Provider = struct {
     }
 
     pub fn complete(self: *Provider, req: ChatRequest) !ChatResponse {
+        var last_err_body = std.ArrayList(u8).initCapacity(self.allocator, 512) catch unreachable;
+        defer last_err_body.deinit(self.allocator);
+
+        var attempt: usize = 0;
+        while (attempt < 3) : (attempt += 1) {
+            if (attempt > 0) {
+                // Exponential backoff: 1s, 2s, 4s
+                const delay_ns: u64 = (@as(u64, 1) << @intCast(attempt - 1)) * std.time.ns_per_s;
+                const ts = std.c.timespec{ .sec = @intCast(delay_ns / std.time.ns_per_s), .nsec = @intCast(delay_ns % std.time.ns_per_s) };
+                _ = std.c.nanosleep(&ts, null);
+            }
+            const result = self.sendRequest(req, false, &last_err_body);
+            if (result) |resp| return resp else |err| {
+                if (err == error.RateLimited) continue;
+                return err;
+            }
+        }
+        // All retries exhausted — return structured error
+        std.log.err("LLM request failed after 3 attempts: {s}", .{last_err_body.items});
+        return error.LlmError;
+    }
+
+    /// Send a single HTTP request. Returns error.RateLimited for 429 so caller can retry.
+    fn sendRequest(self: *Provider, req: ChatRequest, stream: bool, last_err_body: *std.ArrayList(u8)) !ChatResponse {
         const url = try self.chatUrl();
         defer self.allocator.free(url);
 
@@ -168,7 +192,7 @@ pub const Provider = struct {
         }
 
         var body: ?[]const u8 = null;
-        try self.buildRequestBody(req, false, &body);
+        try self.buildRequestBody(req, stream, &body);
         defer if (body) |b| self.allocator.free(b);
 
         var redirect_buf: [4096]u8 = undefined;
@@ -181,7 +205,11 @@ pub const Provider = struct {
         if (response.head.status != .ok) {
             const err_body = try readBody(&response, 65536, self.allocator);
             defer self.allocator.free(err_body);
-            std.log.err("LLM request failed: {d} (body: {s})", .{ @intFromEnum(response.head.status), err_body });
+            last_err_body.clearRetainingCapacity();
+            last_err_body.appendSlice(self.allocator, err_body) catch {};
+            const status_code = @intFromEnum(response.head.status);
+            std.log.err("LLM request failed: {d} (body: {s})", .{ status_code, err_body });
+            if (status_code == 429 or status_code >= 500) return error.RateLimited;
             return error.LlmError;
         }
 
@@ -209,6 +237,28 @@ pub const Provider = struct {
         writer: *std.Io.Writer,
         format_json: bool,
     ) !ChatResponse {
+        var last_err_body = std.ArrayList(u8).initCapacity(self.allocator, 512) catch unreachable;
+        defer last_err_body.deinit(self.allocator);
+
+        var attempt: usize = 0;
+        while (attempt < 3) : (attempt += 1) {
+            if (attempt > 0) {
+                const delay_ns: u64 = (@as(u64, 1) << @intCast(attempt - 1)) * std.time.ns_per_s;
+                const ts = std.c.timespec{ .sec = @intCast(delay_ns / std.time.ns_per_s), .nsec = @intCast(delay_ns % std.time.ns_per_s) };
+                _ = std.c.nanosleep(&ts, null);
+            }
+            const result = self.streamRequest(req, writer, format_json, &last_err_body);
+            if (result) |resp| return resp else |err| {
+                if (err == error.RateLimited) continue;
+                return err;
+            }
+        }
+        std.log.err("LLM streaming request failed after 3 attempts: {s}", .{last_err_body.items});
+        return error.LlmError;
+    }
+
+    /// Send a single streaming HTTP request. Returns error.RateLimited for 429 so caller can retry.
+    fn streamRequest(self: *Provider, req: ChatRequest, writer: *std.Io.Writer, format_json: bool, last_err_body: *std.ArrayList(u8)) !ChatResponse {
         const url = try self.chatUrl();
         defer self.allocator.free(url);
 
@@ -218,7 +268,6 @@ pub const Provider = struct {
         const uri = try std.Uri.parse(url);
         var headers: std.http.Client.Request.Headers = .{};
         headers.content_type = .{ .override = "application/json" };
-        // Accept header not supported in Zig 0.16.0 Headers struct; endpoint works without it
 
         if (self.api_key) |key| {
             const auth = try std.fmt.allocPrint(self.allocator, "Bearer {s}", .{key});
@@ -240,7 +289,11 @@ pub const Provider = struct {
         if (response.head.status != .ok) {
             const err_body = try readBody(&response, 65536, self.allocator);
             defer self.allocator.free(err_body);
-            std.log.err("LLM request failed: {d} (body: {s})", .{ @intFromEnum(response.head.status), err_body });
+            last_err_body.clearRetainingCapacity();
+            last_err_body.appendSlice(self.allocator, err_body) catch {};
+            const status_code = @intFromEnum(response.head.status);
+            std.log.err("LLM streaming request failed: {d} (body: {s})", .{ status_code, err_body });
+            if (status_code == 429 or status_code >= 500) return error.RateLimited;
             return error.LlmError;
         }
 
@@ -463,10 +516,19 @@ fn parseChatResponse(allocator: std.mem.Allocator, body: []const u8) !ChatRespon
         for (arr, 0..) |item, i| {
             if (item != .object) return error.InvalidResponse;
             const obj = item.object;
+            const id_val = obj.get("id") orelse return error.InvalidResponse;
+            if (id_val != .string) return error.InvalidResponse;
+            const fn_val = obj.get("function") orelse return error.InvalidResponse;
+            if (fn_val != .object) return error.InvalidResponse;
+            const fn_obj = fn_val.object;
+            const name_val = fn_obj.get("name") orelse return error.InvalidResponse;
+            if (name_val != .string) return error.InvalidResponse;
+            const args_val = fn_obj.get("arguments") orelse return error.InvalidResponse;
+            if (args_val != .string) return error.InvalidResponse;
             result[i] = ToolCall{
-                .id = try allocator.dupe(u8, obj.get("id").?.string),
-                .name = try allocator.dupe(u8, obj.get("function").?.object.get("name").?.string),
-                .arguments = try allocator.dupe(u8, obj.get("function").?.object.get("arguments").?.string),
+                .id = try allocator.dupe(u8, id_val.string),
+                .name = try allocator.dupe(u8, name_val.string),
+                .arguments = try allocator.dupe(u8, args_val.string),
             };
         }
         break :blk result;
