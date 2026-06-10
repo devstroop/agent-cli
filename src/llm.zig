@@ -119,9 +119,7 @@ pub const Provider = struct {
                 }
                 try msg_obj.put(ja, "tool_calls", .{ .array = tc_arr });
             }
-            if (msg.content.len > 0 or (msg.tool_calls == null and msg.tool_call_id == null)) {
-                try msg_obj.put(ja, "content", .{ .string = msg.content });
-            }
+            try msg_obj.put(ja, "content", .{ .string = msg.content });
             try msgs_arr.append(.{ .object = msg_obj });
         }
         try body_obj.put(ja, "messages", .{ .array = msgs_arr });
