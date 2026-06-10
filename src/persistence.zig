@@ -230,8 +230,12 @@ fn parseSession(allocator: std.mem.Allocator, content: []const u8) !session_mod.
     var total_output_tokens: u64 = 0;
     if (obj.get("tokens")) |tokens_val| {
         if (tokens_val == .object) {
-            if (tokens_val.object.get("input")) |v| { if (v == .integer) total_input_tokens = @intCast(@as(u64, @intCast(v.integer))); }
-            if (tokens_val.object.get("output")) |v| { if (v == .integer) total_output_tokens = @intCast(@as(u64, @intCast(v.integer))); }
+            if (tokens_val.object.get("input")) |v| {
+                if (v == .integer) total_input_tokens = @intCast(@as(u64, @intCast(v.integer)));
+            }
+            if (tokens_val.object.get("output")) |v| {
+                if (v == .integer) total_output_tokens = @intCast(@as(u64, @intCast(v.integer)));
+            }
         }
     }
 

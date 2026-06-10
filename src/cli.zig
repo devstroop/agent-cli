@@ -283,7 +283,9 @@ pub const Cmd = struct {
                 while (it.next()) |e| try subs.append(self.allocator, e.value_ptr.*);
             }
             std.sort.insertion(*Cmd, subs.items, {}, struct {
-                fn lt(_: void, a: *Cmd, b: *Cmd) bool { return std.mem.order(u8, a.options.name, b.options.name) == .lt; }
+                fn lt(_: void, a: *Cmd, b: *Cmd) bool {
+                    return std.mem.order(u8, a.options.name, b.options.name) == .lt;
+                }
             }.lt);
             for (subs.items) |sub| {
                 try self.writer.print("   {s}", .{sub.options.name});

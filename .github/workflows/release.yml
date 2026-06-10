@@ -4,38 +4,33 @@ on:
   push:
     tags: ["v*"]
 
-permissions:
-  contents: write
-
 jobs:
-  build:
+  release:
+    permissions:
+      contents: write
     strategy:
       matrix:
-        include:
-          - target: x86_64-linux
-            os: ubuntu-latest
-          - target: aarch64-linux
-            os: ubuntu-latest
-          - target: x86_64-macos
-            os: macos-latest
-          - target: aarch64-macos
-            os: macos-latest
-          - target: x86_64-windows
-            os: ubuntu-latest
-    runs-on: ${{ matrix.os }}
+        target:
+          - x86_64-linux
+          - aarch64-linux
+          - x86_64-macos
+          - aarch64-macos
+          - x86_64-windows
+          - aarch64-windows
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: mlugg/setup-zig@v2
         with:
           version: "0.16.0"
       - run: zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe
       - name: Package (unix)
-        if: matrix.target != 'x86_64-windows'
+        if: ${{ !endsWith(matrix.target, '-windows') }}
         run: |
           cd zig-out/bin
           tar czf ../../agent-${{ matrix.target }}.tar.gz agent
       - name: Package (windows)
-        if: matrix.target == 'x86_64-windows'
+        if: ${{ endsWith(matrix.target, '-windows') }}
         run: |
           cd zig-out/bin
           zip ../../agent-${{ matrix.target }}.zip agent.exe

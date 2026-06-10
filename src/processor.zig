@@ -12,75 +12,47 @@ const ToolDispatch = struct {
 };
 
 const dispatch_table = &[_]ToolDispatch{
-    .{
-        .name = "bash",
-        .description = "Execute a bash command and return its output",
-        .parameters = \\{"type":"object","properties":{"command":{"type":"string","description":"The bash command to run"}},"required":["command"]}
+    .{ .name = "bash", .description = "Execute a bash command and return its output", .parameters =
+    \\{"type":"object","properties":{"command":{"type":"string","description":"The bash command to run"}},"required":["command"]}
     },
-    .{
-        .name = "read",
-        .description = "Read the contents of a file",
-        .parameters = \\{"type":"object","properties":{"file_path":{"type":"string","description":"Absolute path to the file"}},"required":["file_path"]}
+    .{ .name = "read", .description = "Read the contents of a file", .parameters =
+    \\{"type":"object","properties":{"file_path":{"type":"string","description":"Absolute path to the file"}},"required":["file_path"]}
     },
-    .{
-        .name = "write",
-        .description = "Write content to a file (creates or overwrites)",
-        .parameters = \\{"type":"object","properties":{"file_path":{"type":"string","description":"Absolute path to the file"},"content":{"type":"string","description":"Content to write"}},"required":["file_path","content"]}
+    .{ .name = "write", .description = "Write content to a file (creates or overwrites)", .parameters =
+    \\{"type":"object","properties":{"file_path":{"type":"string","description":"Absolute path to the file"},"content":{"type":"string","description":"Content to write"}},"required":["file_path","content"]}
     },
-    .{
-        .name = "glob",
-        .description = "Search for files matching a glob pattern",
-        .parameters = \\{"type":"object","properties":{"pattern":{"type":"string","description":"Glob pattern (e.g. src/**/*.zig)"},"path":{"type":"string","description":"Directory to search in"}},"required":["pattern"]}
+    .{ .name = "glob", .description = "Search for files matching a glob pattern", .parameters =
+    \\{"type":"object","properties":{"pattern":{"type":"string","description":"Glob pattern (e.g. src/**/*.zig)"},"path":{"type":"string","description":"Directory to search in"}},"required":["pattern"]}
     },
-    .{
-        .name = "grep",
-        .description = "Search file contents using a regex pattern",
-        .parameters = \\{"type":"object","properties":{"pattern":{"type":"string","description":"Regex pattern"},"path":{"type":"string","description":"Directory to search"},"include":{"type":"string","description":"File glob filter (e.g. *.zig)"}},"required":["pattern"]}
+    .{ .name = "grep", .description = "Search file contents using a regex pattern", .parameters =
+    \\{"type":"object","properties":{"pattern":{"type":"string","description":"Regex pattern"},"path":{"type":"string","description":"Directory to search"},"include":{"type":"string","description":"File glob filter (e.g. *.zig)"}},"required":["pattern"]}
     },
-    .{
-        .name = "webfetch",
-        .description = "Fetch a URL and return its content as markdown",
-        .parameters = \\{"type":"object","properties":{"url":{"type":"string","description":"The URL to fetch"}},"required":["url"]}
+    .{ .name = "webfetch", .description = "Fetch a URL and return its content as markdown", .parameters =
+    \\{"type":"object","properties":{"url":{"type":"string","description":"The URL to fetch"}},"required":["url"]}
     },
-    .{
-        .name = "edit",
-        .description = "Edit a file by replacing exact text (search-and-replace). Use this instead of write when making targeted changes.",
-        .parameters = \\{"type":"object","properties":{"file_path":{"type":"string","description":"Absolute path to the file"},"old_string":{"type":"string","description":"Exact text to search for and replace"},"new_string":{"type":"string","description":"Replacement text"}},"required":["file_path","old_string","new_string"]}
+    .{ .name = "edit", .description = "Edit a file by replacing exact text (search-and-replace). Use this instead of write when making targeted changes.", .parameters =
+    \\{"type":"object","properties":{"file_path":{"type":"string","description":"Absolute path to the file"},"old_string":{"type":"string","description":"Exact text to search for and replace"},"new_string":{"type":"string","description":"Replacement text"}},"required":["file_path","old_string","new_string"]}
     },
-    .{
-        .name = "question",
-        .description = "Ask the user a question and get their answer. Use this when you need additional information or clarification from the user.",
-        .parameters = \\{"type":"object","properties":{"question":{"type":"string","description":"The question to ask the user"}},"required":["question"]}
+    .{ .name = "question", .description = "Ask the user a question and get their answer. Use this when you need additional information or clarification from the user.", .parameters =
+    \\{"type":"object","properties":{"question":{"type":"string","description":"The question to ask the user"}},"required":["question"]}
     },
-    .{
-        .name = "skill",
-        .description = "Load a skill's instructions from the skills directory and inject them into context.",
-        .parameters = \\{"type":"object","properties":{"name":{"type":"string","description":"Name of the skill to load"}},"required":["name"]}
+    .{ .name = "skill", .description = "Load a skill's instructions from the skills directory and inject them into context.", .parameters =
+    \\{"type":"object","properties":{"name":{"type":"string","description":"Name of the skill to load"}},"required":["name"]}
     },
-    .{
-        .name = "todowrite",
-        .description = "Write or update a TODO list in the workspace. Appends to TODO.md.",
-        .parameters = \\{"type":"object","properties":{"todos":{"type":"string","description":"The TODO items to write"}},"required":["todos"]}
+    .{ .name = "todowrite", .description = "Write or update a TODO list in the workspace. Appends to TODO.md.", .parameters =
+    \\{"type":"object","properties":{"todos":{"type":"string","description":"The TODO items to write"}},"required":["todos"]}
     },
-    .{
-        .name = "plan",
-        .description = "Create a structured plan as a markdown file (PLAN.md) in the workspace.",
-        .parameters = \\{"type":"object","properties":{"plan_text":{"type":"string","description":"The plan content in markdown format"}},"required":["plan_text"]}
+    .{ .name = "plan", .description = "Create a structured plan as a markdown file (PLAN.md) in the workspace.", .parameters =
+    \\{"type":"object","properties":{"plan_text":{"type":"string","description":"The plan content in markdown format"}},"required":["plan_text"]}
     },
-    .{
-        .name = "websearch",
-        .description = "Search the web for information. Returns results from DuckDuckGo.",
-        .parameters = \\{"type":"object","properties":{"query":{"type":"string","description":"The search query"}},"required":["query"]}
+    .{ .name = "websearch", .description = "Search the web for information. Returns results from DuckDuckGo.", .parameters =
+    \\{"type":"object","properties":{"query":{"type":"string","description":"The search query"}},"required":["query"]}
     },
-    .{
-        .name = "snapshot",
-        .description = "Capture a git diff snapshot of the current workspace. Use this before and after making changes to show the diff.",
-        .parameters = \\{"type":"object","properties":{"path":{"type":"string","description":"Optional path to the git repository"}},"required":[]}
+    .{ .name = "snapshot", .description = "Capture a git diff snapshot of the current workspace. Use this before and after making changes to show the diff.", .parameters =
+    \\{"type":"object","properties":{"path":{"type":"string","description":"Optional path to the git repository"}},"required":[]}
     },
-    .{
-        .name = "task",
-        .description = "Execute a task using a sub-agent. Spawns a new LLM call with the specified agent to complete a sub-task.",
-        .parameters = \\{"type":"object","properties":{"name":{"type":"string","description":"Sub-agent name (explore, general, etc.)"},"prompt":{"type":"string","description":"The task description for the sub-agent"}},"required":["name","prompt"]}
+    .{ .name = "task", .description = "Execute a task using a sub-agent. Spawns a new LLM call with the specified agent to complete a sub-task.", .parameters =
+    \\{"type":"object","properties":{"name":{"type":"string","description":"Sub-agent name (explore, general, etc.)"},"prompt":{"type":"string","description":"The task description for the sub-agent"}},"required":["name","prompt"]}
     },
 };
 
