@@ -12,10 +12,19 @@ pub const AgentConfig = struct {
     }
 };
 
+pub const MCPServerConfig = struct {
+    url: []const u8,
+
+    pub fn deinit(self: *MCPServerConfig, allocator: std.mem.Allocator) void {
+        allocator.free(self.url);
+    }
+};
+
 pub const Config = struct {
     disabled_providers: ?[]const []const u8 = null,
     provider: ?std.StringHashMap(ProviderConfig) = null,
     agents: ?std.StringHashMap(AgentConfig) = null,
+    mcp_servers: ?std.StringHashMap(MCPServerConfig) = null,
 
     pub fn deinit(self: *Config, allocator: std.mem.Allocator) void {
         if (self.provider) |*providers| {
@@ -38,6 +47,14 @@ pub const Config = struct {
             }
             agents.deinit();
         }
+        if (self.mcp_servers) |*mcp| {
+            var iter = mcp.iterator();
+            while (iter.next()) |entry| {
+                entry.value_ptr.deinit(allocator);
+                allocator.free(entry.key_ptr.*);
+            }
+            mcp.deinit();
+        }
     }
 
     pub fn empty() Config {
@@ -45,6 +62,7 @@ pub const Config = struct {
             .provider = null,
             .disabled_providers = null,
             .agents = null,
+            .mcp_servers = null,
         };
     }
 };
@@ -235,6 +253,31 @@ pub fn parse(allocator: std.mem.Allocator, json_text: []const u8) !Config {
                 try agent_map.put(ak, .{ .description = desc, .systemPrompt = sp });
             }
             config.agents = agent_map;
+        }
+    }
+
+    // mcpServers
+    if (root.object.get("mcpServers")) |mcp_val| {
+        if (mcp_val == .object) {
+            var mcp_map = std.StringHashMap(MCPServerConfig).init(allocator);
+            errdefer {
+                var iter = mcp_map.iterator();
+                while (iter.next()) |entry| {
+                    entry.value_ptr.deinit(allocator);
+                    allocator.free(entry.key_ptr.*);
+                }
+                mcp_map.deinit();
+            }
+            var miter = mcp_val.object.iterator();
+            while (miter.next()) |entry| {
+                const mk = try allocator.dupe(u8, entry.key_ptr.*);
+                errdefer allocator.free(mk);
+                if (entry.value_ptr.* != .object) continue;
+                const url = try allocator.dupe(u8, entry.value_ptr.*.object.get("url").?.string);
+                errdefer allocator.free(url);
+                try mcp_map.put(mk, .{ .url = url });
+            }
+            config.mcp_servers = mcp_map;
         }
     }
 

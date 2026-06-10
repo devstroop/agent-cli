@@ -117,6 +117,58 @@ pub fn skill(allocator: std.mem.Allocator, io: std.Io, name: []const u8) !Result
     return Result{ .stdout = "", .stderr = err, .exit_code = 1 };
 }
 
+/// List available skills with their descriptions (metadata only).
+/// Scans ~/.config/agent/skills/ and .agent/skills/ for .md files,
+/// extracting the first `# Heading` as the description.
+pub fn skillList(allocator: std.mem.Allocator, io: std.Io) !Result {
+    const home = std.c.getenv("HOME") orelse return Result{ .stdout = "", .stderr = "No HOME", .exit_code = 1 };
+    const home_span = std.mem.span(home);
+
+    var buf = std.ArrayList(u8).initCapacity(allocator, 4096) catch unreachable;
+
+    const paths = [_][]const u8{
+        try std.fmt.allocPrint(allocator, "{s}/.config/agent/skills", .{home_span}),
+        try std.fmt.allocPrint(allocator, ".agent/skills", .{}),
+    };
+    defer for (paths) |p| allocator.free(p);
+
+    for (paths) |path| {
+        const cmd = try std.fmt.allocPrint(allocator, "ls -1 '{s}'/*.md 2>/dev/null", .{path});
+        defer allocator.free(cmd);
+        const ls_result = bash(allocator, io, cmd) catch continue;
+        defer ls_result.deinit(allocator);
+
+        const trimmed_out = std.mem.trim(u8, ls_result.stdout, " \t\r\n");
+        if (trimmed_out.len == 0) continue;
+
+        var lines = std.mem.splitScalar(u8, trimmed_out, '\n');
+        while (lines.next()) |line| {
+            if (line.len == 0) continue;
+            // Extract filename stem
+            const stem = std.fs.path.stem(line);
+            // Read first heading as description
+            const content = std.Io.Dir.cwd().readFileAlloc(io, line, allocator, std.Io.Limit.limited(256)) catch continue;
+            defer allocator.free(content);
+            var desc: []const u8 = "(no description)";
+            var content_lines = std.mem.splitScalar(u8, content, '\n');
+            while (content_lines.next()) |cl| {
+                var start: usize = 0;
+                while (start < cl.len and (cl[start] == ' ' or cl[start] == '\t')) : (start += 1) {}
+                if (start + 1 < cl.len and cl[start] == '#' and cl[start + 1] == ' ') {
+                    desc = cl[start + 2 ..];
+                    break;
+                }
+            }
+            const line_str = try std.fmt.allocPrint(allocator, "- {s}: {s}\n", .{ stem, desc });
+            try buf.appendSlice(allocator, line_str);
+            allocator.free(line_str);
+        }
+    }
+
+    const out = try buf.toOwnedSlice(allocator);
+    return Result{ .stdout = out, .stderr = "", .exit_code = 0 };
+}
+
 pub fn plan(allocator: std.mem.Allocator, io: std.Io, plan_text: []const u8) !Result {
     const content = try std.fmt.allocPrint(allocator, "# Plan\n\n{s}\n", .{plan_text});
     const dir = std.Io.Dir.cwd();

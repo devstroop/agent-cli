@@ -92,7 +92,7 @@ fn setupExec(cmd: *cli.Cmd, agent_name: []const u8) !ExecState {
     const resolved = try resolveModelProvider(allocator, &config, model_str);
 
     // Resolve agent
-    const agent = try resolveAgent(allocator, config.agents, agent_name);
+    const agent = try resolveAgent(allocator, cmd.io, config.agents, agent_name);
 
     // Create session
     var session = if (session_id.len > 0) blk: {
@@ -138,10 +138,27 @@ fn setupExec(cmd: *cli.Cmd, agent_name: []const u8) !ExecState {
     {
         const ctx_text = try context.render(cmd.io, allocator, if (project_dir.len > 0) project_dir else null);
         try session.addMessage(.{ .role = try allocator.dupe(u8, "system"), .content = ctx_text });
+        // Inject available skills list
+        {
+            const skill_result = tool.skillList(allocator, cmd.io) catch null;
+            if (skill_result) |sr| {
+                defer sr.deinit(allocator);
+                if (sr.stdout.len > 0 and sr.exit_code == 0) {
+                    const skill_ctx = try std.fmt.allocPrint(allocator, "Available skills (call the `skill` tool to load full instructions):\n{s}", .{sr.stdout});
+                    try session.addMessage(.{ .role = try allocator.dupe(u8, "system"), .content = skill_ctx });
+                }
+            }
+        }
         // Append model-family-specific suffix to agent prompt
         const model_family = agent_mod.detectModelFamily(resolved.model_id);
         const suffix = agent_mod.modelFamilySuffix(model_family);
-        const full_prompt = if (suffix.len > 0) try std.fmt.allocPrint(allocator, "{s}{s}", .{ agent.system_prompt, suffix }) else agent.system_prompt;
+        // Expand ! commands in system prompt
+        const expanded_prompt = try context.expandBangCommands(allocator, cmd.io, agent.system_prompt);
+        const full_prompt = if (suffix.len > 0) blk: {
+            const fp = try std.fmt.allocPrint(allocator, "{s}{s}", .{ expanded_prompt, suffix });
+            allocator.free(expanded_prompt);
+            break :blk fp;
+        } else expanded_prompt;
         try session.addMessage(.{ .role = try allocator.dupe(u8, "system"), .content = full_prompt });
     }
     if (prompt_text.len > 0) {
@@ -323,7 +340,7 @@ fn editExec(cmd: *cli.Cmd) !void {
 
     var provider = llm.Provider.init(allocator, cmd.io, state.resolved.prov_cfg, state.resolved.api_key);
     const reader = if (state.skip_perms) null else cmd.reader;
-    const result = try processor.processTurnWithTools(allocator, cmd.io, &provider, &state.session, state.resolved.model_id, state.skip_perms, state.format_json, false, cmd.writer, reader, state.temperature, state.max_tokens, state.top_p, state.variant, tools);
+    const result = try processor.processTurnWithTools(allocator, cmd.io, &provider, &state.session, state.resolved.model_id, state.skip_perms, state.format_json, false, cmd.writer, reader, state.temperature, state.max_tokens, state.top_p, state.variant, tools, &.{});
     defer result.deinit(allocator);
 
     try saveAndShare(cmd, allocator, &state.session, state.format_json);
@@ -358,7 +375,7 @@ fn runExec(cmd: *cli.Cmd) !void {
     // Create provider and run processor loop
     var provider = llm.Provider.init(allocator, cmd.io, state.resolved.prov_cfg, state.resolved.api_key);
     const reader = if (state.skip_perms) null else cmd.reader;
-    const result = try processor.processTurn(allocator, cmd.io, &provider, &state.session, state.resolved.model_id, state.skip_perms, state.format_json, show_thinking, cmd.writer, reader, state.temperature, state.max_tokens, state.top_p, state.variant);
+    const result = try processor.processTurnWithConfig(allocator, cmd.io, &provider, &state.session, state.resolved.model_id, state.skip_perms, state.format_json, show_thinking, cmd.writer, reader, state.temperature, state.max_tokens, state.top_p, state.variant, &state.config);
     defer result.deinit(allocator);
 
     try saveAndShare(cmd, allocator, &state.session, state.format_json);
@@ -471,7 +488,7 @@ fn resolveApiKey(allocator: std.mem.Allocator, provider_id: []const u8) !?[]cons
     return null;
 }
 
-fn resolveAgent(allocator: std.mem.Allocator, config_agents: ?std.StringHashMap(config_mod.AgentConfig), name: []const u8) !agent_mod.Agent {
+fn resolveAgent(allocator: std.mem.Allocator, io: std.Io, config_agents: ?std.StringHashMap(config_mod.AgentConfig), name: []const u8) !agent_mod.Agent {
     if (name.len > 0) {
         // Check config agents first
         if (config_agents) |agents| {
@@ -484,6 +501,27 @@ fn resolveAgent(allocator: std.mem.Allocator, config_agents: ?std.StringHashMap(
                 };
             }
         }
+        // Check custom agent files (.agent/agents/*.md)
+        if (agent_mod.loadAgentFiles(allocator, io)) |custom_agents| {
+            defer {
+                var idx: usize = 0;
+                while (idx < custom_agents.len) : (idx += 1) {
+                    (&custom_agents[idx]).deinit(allocator);
+                }
+                allocator.free(custom_agents);
+            }
+            for (custom_agents) |a| {
+                if (std.mem.eql(u8, a.name, name)) {
+                    return agent_mod.Agent{
+                        .name = try allocator.dupe(u8, a.name),
+                        .mode = a.mode,
+                        .description = try allocator.dupe(u8, a.description),
+                        .system_prompt = try allocator.dupe(u8, a.system_prompt),
+                        .default_model = if (a.default_model) |m| try allocator.dupe(u8, m) else null,
+                    };
+                }
+            }
+        } else |_| {}
         // Fall back to built-in
         if (try agent_mod.getBuiltin(allocator, name)) |a| {
             return a;
@@ -521,7 +559,6 @@ fn writeJsonLine(writer: *Io.Writer, allocator: std.mem.Allocator, value: anytyp
 }
 
 fn handleCommand(allocator: std.mem.Allocator, io: std.Io, writer: *Io.Writer, session: *session_mod.Session, resolved: *ModelResolution, agent: *agent_mod.Agent, config_agents: ?std.StringHashMap(config_mod.AgentConfig), command: []const u8, format_json: bool) !?processor.ProcessResult {
-    _ = io;
     _ = format_json;
     const trimmed = std.mem.trim(u8, command, " \t\r\n");
     if (trimmed.len == 0 or trimmed[0] != '/') return null;
@@ -556,7 +593,7 @@ fn handleCommand(allocator: std.mem.Allocator, io: std.Io, writer: *Io.Writer, s
             try writer.print("Current agent: {s}\n", .{agent.name});
         } else {
             agent.deinit(allocator);
-            agent.* = try resolveAgent(allocator, config_agents, args);
+            agent.* = try resolveAgent(allocator, io, config_agents, args);
             allocator.free(session.agent.?);
             session.agent = try allocator.dupe(u8, args);
             try writer.print("Agent set to {s}\n", .{args});

@@ -4,6 +4,8 @@ const session_mod = @import("session.zig");
 const tool = @import("tool.zig");
 const permission_mod = @import("permission.zig");
 const agent_mod = @import("agent.zig");
+const config_mod = @import("config.zig");
+const mcp = @import("mcp.zig");
 
 const ToolDispatch = struct {
     name: []const u8,
@@ -198,7 +200,7 @@ pub fn processAsk(
     };
 }
 
-/// Backward-compatible wrapper: builds all tool defs.
+/// Backward-compatible wrapper: builds all tool defs (no MCP).
 pub fn processTurn(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -222,7 +224,89 @@ pub fn processTurn(
         for (tools) |*t| t.deinit(allocator);
         allocator.free(tools);
     }
-    return processTurnWithTools(allocator, io, provider, session, model_id, skip_perms, format_json, show_thinking, writer, reader, temperature, max_tokens, top_p, variant, tools);
+    return processTurnWithTools(allocator, io, provider, session, model_id, skip_perms, format_json, show_thinking, writer, reader, temperature, max_tokens, top_p, variant, tools, &.{});
+}
+
+/// Like processTurn but accepts a config for MCP server discovery.
+pub fn processTurnWithConfig(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    provider: *llm.Provider,
+    session: *session_mod.Session,
+    model_id: []const u8,
+    skip_perms: bool,
+    format_json: bool,
+    show_thinking: bool,
+    writer: *std.Io.Writer,
+    reader: ?*std.Io.Reader,
+    temperature: ?f64,
+    max_tokens: ?u64,
+    top_p: ?f64,
+    variant: ?[]const u8,
+    config: ?*const config_mod.Config,
+) !ProcessResult {
+    var params_arena = std.heap.ArenaAllocator.init(allocator);
+    defer params_arena.deinit();
+    const pa = params_arena.allocator();
+
+    // Build built-in tool defs
+    const builtin = try buildToolDefs(allocator, pa);
+
+    // Build MCP clients and discover their tools
+    var mcp_clients = std.ArrayList(mcp.Client).initCapacity(allocator, 4) catch unreachable;
+    defer {
+        for (mcp_clients.items) |*c| c.deinit();
+        mcp_clients.deinit(allocator);
+    }
+
+    var mcp_tool_list = std.ArrayList(llm.ToolDef).initCapacity(allocator, 16) catch unreachable;
+    defer {
+        for (mcp_tool_list.items) |t| {
+            allocator.free(t.name);
+            allocator.free(t.description);
+        }
+        mcp_tool_list.deinit(allocator);
+    }
+
+    if (config) |cfg| {
+        if (cfg.mcp_servers) |servers| {
+            var iter = servers.iterator();
+            while (iter.next()) |entry| {
+                var client = mcp.Client.init(allocator, io, entry.value_ptr.url, entry.key_ptr.*);
+                const tools = client.listTools(allocator, pa) catch |err| {
+                    std.log.warn("MCP '{s}' tool discovery failed: {}", .{ entry.key_ptr.*, err });
+                    client.deinit();
+                    continue;
+                };
+                for (tools) |t| {
+                    try mcp_tool_list.append(allocator, t);
+                }
+                try mcp_clients.append(allocator, client);
+            }
+        }
+    }
+
+    // Merge built-in and MCP tool defs
+    const total = builtin.len + mcp_tool_list.items.len;
+    const all_tools = try allocator.alloc(llm.ToolDef, total);
+    var ti: usize = 0;
+    for (builtin) |t| {
+        all_tools[ti] = t;
+        ti += 1;
+    }
+    allocator.free(builtin);
+    for (mcp_tool_list.items) |t| {
+        all_tools[ti] = t;
+        ti += 1;
+    }
+    mcp_tool_list.items.len = 0; // prevent defer from freeing (moved to all_tools)
+
+    defer {
+        for (all_tools) |*t| t.deinit(allocator);
+        allocator.free(all_tools);
+    }
+
+    return processTurnWithTools(allocator, io, provider, session, model_id, skip_perms, format_json, show_thinking, writer, reader, temperature, max_tokens, top_p, variant, all_tools, mcp_clients.items);
 }
 
 pub fn processTurnWithTools(
@@ -241,6 +325,7 @@ pub fn processTurnWithTools(
     top_p: ?f64,
     variant: ?[]const u8,
     tools: []const llm.ToolDef,
+    mcp_clients: []mcp.Client,
 ) !ProcessResult {
     _ = show_thinking; // reserved for reasoning block display
 
@@ -387,7 +472,7 @@ pub fn processTurnWithTools(
                 };
 
                 // Execute tool
-                var tool_result = try executeTool(allocator, io, writer, reader, provider, model_id, tc);
+                var tool_result = try executeTool(allocator, io, writer, reader, provider, model_id, tc, mcp_clients);
                 defer tool_result.deinit(allocator);
                 const is_err = tool_result.exit_code != 0;
 
@@ -427,7 +512,9 @@ fn buildToolDefs(allocator: std.mem.Allocator, params_arena: std.mem.Allocator) 
     return result;
 }
 
-fn executeTool(allocator: std.mem.Allocator, io: std.Io, writer: *std.Io.Writer, reader: ?*std.Io.Reader, provider: *llm.Provider, model_id: []const u8, tc: llm.ToolCall) !tool.Result {
+
+
+fn executeTool(allocator: std.mem.Allocator, io: std.Io, writer: *std.Io.Writer, reader: ?*std.Io.Reader, provider: *llm.Provider, model_id: []const u8, tc: llm.ToolCall, mcp_clients: []mcp.Client) !tool.Result {
     const args_parsed = try std.json.parseFromSlice(std.json.Value, allocator, tc.arguments, .{});
     defer args_parsed.deinit();
     const args = args_parsed.value;
@@ -510,6 +597,19 @@ fn executeTool(allocator: std.mem.Allocator, io: std.Io, writer: *std.Io.Writer,
         const sub_resp = try provider.complete(.{ .model = model_id, .messages = sub_msgs[0..2] });
         defer sub_resp.deinit(allocator);
         return tool.Result{ .stdout = sub_resp.content, .stderr = "", .exit_code = 0 };
+    }
+
+    // MCP tool dispatch
+    if (std.mem.startsWith(u8, tc.name, "mcp/")) {
+        for (mcp_clients) |*mc| {
+            const prefix = try std.fmt.allocPrint(allocator, "mcp/{s}/", .{mc.server_name});
+            defer allocator.free(prefix);
+            if (std.mem.startsWith(u8, tc.name, prefix)) {
+                return mc.callTool(tc.name, tc.arguments, allocator);
+            }
+        }
+        const err_msg = try std.fmt.allocPrint(allocator, "MCP server not found for tool: {s}", .{tc.name});
+        return tool.Result{ .stdout = "", .stderr = err_msg, .exit_code = 1 };
     }
 
     const err_msg = try std.fmt.allocPrint(allocator, "Unknown tool: {s}", .{tc.name});

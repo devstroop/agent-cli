@@ -1,6 +1,44 @@
 const std = @import("std");
 const tool = @import("tool.zig");
 
+/// Expand !command patterns in a string.
+/// Each `!command` (at start of line or after whitespace) is replaced
+/// with the trimmed stdout of running `command` via bash.
+/// Use `\!` to escape a literal `!`.
+pub fn expandBangCommands(allocator: std.mem.Allocator, io: std.Io, input: []const u8) ![]const u8 {
+    var result = try std.ArrayList(u8).initCapacity(allocator, input.len + 4096);
+
+    var i: usize = 0;
+    while (i < input.len) {
+        // Handle escaped \!
+        if (input[i] == '\\' and i + 1 < input.len and input[i + 1] == '!') {
+            try result.append(allocator, '!');
+            i += 2;
+            continue;
+        }
+        if (input[i] == '!' and (i == 0 or input[i - 1] == '\n' or input[i - 1] == ' ' or input[i - 1] == '\t')) {
+            i += 1;
+            const cmd_start = i;
+            while (i < input.len and input[i] != '\n') : (i += 1) {}
+            const cmd = input[cmd_start..i];
+
+            const command = try std.fmt.allocPrint(allocator, "{s} 2>/dev/null", .{cmd});
+            defer allocator.free(command);
+            const exec_result = tool.bash(allocator, io, command) catch {
+                try result.appendSlice(allocator, "(command failed)");
+                continue;
+            };
+            defer exec_result.deinit(allocator);
+            try result.appendSlice(allocator, std.mem.trim(u8, exec_result.stdout, " \t\r\n"));
+        } else {
+            try result.append(allocator, input[i]);
+            i += 1;
+        }
+    }
+
+    return result.toOwnedSlice(allocator);
+}
+
 fn addSection(writer: *std.Io.Writer, title: []const u8, content: []const u8) !void {
     try writer.print("## {s}\n{s}\n\n", .{ title, content });
 }

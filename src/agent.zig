@@ -1,4 +1,5 @@
 const std = @import("std");
+const tool = @import("tool.zig");
 
 /// Built-in agent definitions.
 pub const Mode = enum {
@@ -115,6 +116,73 @@ pub fn getBuiltin(allocator: std.mem.Allocator, name: []const u8) !?Agent {
         }
     }
     return null;
+}
+
+const AgentFrontmatter = struct {
+    name: []const u8,
+    description: []const u8,
+    mode: []const u8, // "primary" or "subagent"
+};
+
+/// Parse YAML frontmatter from markdown content.
+/// Returns null if no frontmatter found.
+fn parseFrontmatter(content: []const u8) ?AgentFrontmatter {
+    if (!std.mem.startsWith(u8, content, "---\n")) return null;
+    const end_marker = std.mem.indexOf(u8, content[4..], "\n---") orelse return null;
+    const yaml_block = content[4 .. 4 + end_marker];
+
+    var fm = AgentFrontmatter{ .name = "", .description = "", .mode = "primary" };
+    var lines = std.mem.splitScalar(u8, yaml_block, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t");
+        if (std.mem.startsWith(u8, trimmed, "name:")) {
+            fm.name = std.mem.trim(u8, trimmed["name:".len..], " \t\"");
+        } else if (std.mem.startsWith(u8, trimmed, "description:")) {
+            fm.description = std.mem.trim(u8, trimmed["description:".len..], " \t\"");
+        } else if (std.mem.startsWith(u8, trimmed, "mode:")) {
+            fm.mode = std.mem.trim(u8, trimmed["mode:".len..], " \t\"");
+        }
+    }
+
+    if (fm.name.len == 0) return null;
+    return fm;
+}
+
+/// Load custom agents from .agent/agents/*.md files.
+pub fn loadAgentFiles(allocator: std.mem.Allocator, io: std.Io) ![]Agent {
+    const dir = ".agent/agents";
+    const cmd = try std.fmt.allocPrint(allocator, "ls -1 '{s}'/*.md 2>/dev/null", .{dir});
+    defer allocator.free(cmd);
+
+    const ls_result = tool.bash(allocator, io, cmd) catch return &.{};
+    defer ls_result.deinit(allocator);
+
+    const trimmed_out = std.mem.trim(u8, ls_result.stdout, " \t\r\n");
+    if (trimmed_out.len == 0) return &.{};
+
+    var agents = std.ArrayList(Agent).initCapacity(allocator, 8) catch unreachable;
+    var lines = std.mem.splitScalar(u8, trimmed_out, '\n');
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+        const content = std.Io.Dir.cwd().readFileAlloc(io, line, allocator, std.Io.Limit.limited(65536)) catch continue;
+        defer allocator.free(content);
+
+        const fm = parseFrontmatter(content) orelse continue;
+
+        const body_start = if (std.mem.indexOf(u8, content, "\n---")) |idx| blk: {
+            const rest = content[idx + 4 ..];
+            break :blk if (std.mem.startsWith(u8, rest, "\n")) rest[1..] else rest;
+        } else content;
+
+        const mode: Mode = if (std.mem.eql(u8, fm.mode, "subagent")) .subagent else .primary;
+        try agents.append(allocator, .{
+            .name = try allocator.dupe(u8, fm.name),
+            .mode = mode,
+            .description = try allocator.dupe(u8, fm.description),
+            .system_prompt = try allocator.dupe(u8, std.mem.trim(u8, body_start, " \t\r\n")),
+        });
+    }
+    return agents.toOwnedSlice(allocator);
 }
 
 /// List all built-in primary agent names.
