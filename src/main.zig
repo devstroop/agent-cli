@@ -323,7 +323,12 @@ fn resolveAgent(allocator: std.mem.Allocator, config_agents: ?std.StringHashMap(
 }
 
 fn readStdinPipe(reader: *Io.Reader, allocator: std.mem.Allocator) !?[]const u8 {
-    if (std.c.isatty(std.posix.STDIN_FILENO) != 0) return null;
+    const native_os = @import("builtin").os.tag;
+    const stdin_fd: std.c.fd_t = if (native_os == .windows)
+        std.os.windows.GetStdHandle(std.os.windows.STD_INPUT_HANDLE)
+    else
+        std.posix.STDIN_FILENO;
+    if (std.c.isatty(stdin_fd) != 0) return null;
     var list = try std.ArrayList(u8).initCapacity(allocator, 4096);
     defer list.deinit(allocator);
     try reader.appendRemainingUnlimited(allocator, &list);
@@ -570,6 +575,7 @@ pub fn main(init: std.process.Init) !void {
         try root.addSub(models_cmd);
     }
 
-    var args_iter = std.process.Args.iterate(init.minimal.args);
+    var args_iter = try std.process.Args.iterateAllocator(init.minimal.args, gpa);
+    defer args_iter.deinit();
     try root.execute(&args_iter);
 }
