@@ -227,3 +227,36 @@ pub fn editFile(allocator: std.mem.Allocator, io: std.Io, file_path: []const u8,
 
     return Result.literal("File updated successfully", "", 0);
 }
+
+test "Result.literal does not crash on deinit" {
+    const testing = @import("std").testing;
+    const allocator = testing.allocator;
+
+    var r = Result.literal("hello", "", 0);
+    r.deinit(allocator);
+    try testing.expectEqual(r.exit_code, 0);
+    try testing.expectEqualStrings(r.stdout, "hello");
+}
+
+test "Result.literal with non-empty stderr" {
+    const testing = @import("std").testing;
+    const allocator = testing.allocator;
+
+    var r = Result.literal("", "error message", 1);
+    r.deinit(allocator);
+    try testing.expectEqual(r.exit_code, 1);
+    try testing.expectEqualStrings(r.stderr, "error message");
+}
+
+test "Result default owns strings and frees on deinit" {
+    const testing = @import("std").testing;
+    const allocator = testing.allocator;
+
+    var r = Result{
+        .stdout = try allocator.dupe(u8, "allocated output"),
+        .stderr = try allocator.dupe(u8, "allocated error"),
+        .exit_code = 0,
+    };
+    r.deinit(allocator);
+    // Should not crash — strings were owned and freed
+}
