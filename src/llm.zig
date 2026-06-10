@@ -255,7 +255,10 @@ pub const Provider = struct {
         var content_buf = std.ArrayList(u8).initCapacity(self.allocator, 4096) catch unreachable;
         defer content_buf.deinit(self.allocator);
         var tool_calls = std.ArrayList(ToolCallAccum).initCapacity(self.allocator, 0) catch unreachable;
-        defer tool_calls.deinit(self.allocator);
+        defer {
+            for (tool_calls.items) |*tc| tc.deinit(self.allocator);
+            tool_calls.deinit(self.allocator);
+        }
         var finish_reason: ?[]const u8 = null;
         var input_tokens: ?u64 = null;
         var output_tokens: ?u64 = null;
@@ -323,6 +326,8 @@ const ToolCallAccum = struct {
         return ToolCallAccum{ .id = id, .name = name, .args = args };
     }
     fn deinit(self: *ToolCallAccum, allocator: std.mem.Allocator) void {
+        if (self.id.len > 0) allocator.free(self.id);
+        if (self.name.len > 0) allocator.free(self.name);
         self.args.deinit(allocator);
     }
     fn toOwnedSlice(self: *ToolCallAccum, allocator: std.mem.Allocator) ![]const u8 {
@@ -392,14 +397,16 @@ fn processSSEData(
                 }
                 if (tc_item.object.get("id")) |id_val| {
                     if (id_val == .string) {
-                        tool_calls.items[idx].id = id_val.string;
+                        if (tool_calls.items[idx].id.len > 0) allocator.free(tool_calls.items[idx].id);
+                        tool_calls.items[idx].id = try allocator.dupe(u8, id_val.string);
                     }
                 }
                 if (tc_item.object.get("function")) |func_val| {
                     if (func_val == .object) {
                         if (func_val.object.get("name")) |name_val| {
                             if (name_val == .string and name_val.string.len > 0) {
-                                tool_calls.items[idx].name = name_val.string;
+                                if (tool_calls.items[idx].name.len > 0) allocator.free(tool_calls.items[idx].name);
+                                tool_calls.items[idx].name = try allocator.dupe(u8, name_val.string);
                             }
                         }
                         if (func_val.object.get("arguments")) |args_val| {
