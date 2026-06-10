@@ -70,6 +70,40 @@ pub const ProcessResult = struct {
     }
 };
 
+/// Stop hook: check if the LLM response appears complete.
+/// Returns `true` if the response looks finished, `false` if it should continue.
+fn checkStopHook(content: []const u8, finish_reason: ?[]const u8) bool {
+    // If the LLM explicitly says it's done with a tool call, trust it
+    if (finish_reason) |fr| {
+        if (std.mem.eql(u8, fr, "tool_calls") or std.mem.eql(u8, fr, "stop")) {
+            // Check for unclosed code fences (odd number of ```)
+            var fence_count: usize = 0;
+            var search_start: usize = 0;
+            while (std.mem.indexOf(u8, content[search_start..], "```")) |idx| {
+                fence_count += 1;
+                search_start += idx + 3;
+            }
+            if (fence_count % 2 != 0) {
+                std.log.debug("Stop hook: unclosed code fence detected", .{});
+                return false;
+            }
+            // Check for obvious truncation: trailing punctuation mid-thought
+            if (content.len > 0) {
+                const trimmed = std.mem.trimRight(u8, content, " \t\n\r");
+                if (trimmed.len > 0) {
+                    const last = trimmed[trimmed.len - 1];
+                    // Ends with mid-thought punctuation or incomplete sentence
+                    if (last == ',' or last == '-' or last == '|') {
+                        std.log.debug("Stop hook: ends with mid-thought '{c}'", .{last});
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+    return true;
+}
+
 /// Look up a tool definition from the dispatch table by name.
 pub fn lookupToolDef(name: []const u8) ?*const ToolDispatch {
     for (dispatch_table) |*dt| {
@@ -343,51 +377,38 @@ pub fn processTurnWithTools(
             return ProcessResult{ .text = try allocator.dupe(u8, ""), .exit_reason = try allocator.dupe(u8, "max_turns"), .input_tokens = input_tokens, .output_tokens = output_tokens };
         }
 
-        // Compaction: if approaching token limit, summarize old messages
+        // Compaction: if approaching token limit, compact messages
+        // Uses inline truncation (keep system + last N exchanges) as a cheap fallback
+        // before attempting LLM-based summarization.
         if (session.estimatedTokens() > 8000) {
-            const compact_agent_opt = try agent_mod.getBuiltin(allocator, "compaction");
-            if (compact_agent_opt == null) return ProcessResult{ .text = try allocator.dupe(u8, ""), .exit_reason = try allocator.dupe(u8, "compaction_no_agent"), .input_tokens = input_tokens, .output_tokens = output_tokens };
-            var compact_agent = compact_agent_opt.?;
-            defer compact_agent.deinit(allocator);
-            var compact_buf = std.ArrayList(u8).initCapacity(allocator, 65536) catch unreachable;
-            defer compact_buf.deinit(allocator);
+            // Phase 1: inline compaction — keep system messages + last 5 exchanges
+            const keep_exchanges: usize = 5;
             var system_indices = std.ArrayList(usize).initCapacity(allocator, session.messages.items.len) catch unreachable;
             defer system_indices.deinit(allocator);
+            var non_system_count: usize = 0;
             for (session.messages.items, 0..) |msg, i| {
                 if (std.mem.eql(u8, msg.role, "system")) {
                     try system_indices.append(allocator, i);
                 } else {
-                    try compact_buf.appendSlice(allocator, msg.role);
-                    try compact_buf.appendSlice(allocator, ": ");
-                    try compact_buf.appendSlice(allocator, msg.content);
-                    try compact_buf.appendSlice(allocator, "\n");
+                    non_system_count += 1;
                 }
             }
-            const compact_text = try compact_buf.toOwnedSlice(allocator);
-            defer allocator.free(compact_text);
-            var compact_msgs = try allocator.alloc(llm.Message, 2);
-            defer allocator.free(compact_msgs);
-            compact_msgs[0] = .{ .role = try allocator.dupe(u8, "system"), .content = try allocator.dupe(u8, compact_agent.system_prompt) };
-            compact_msgs[1] = .{ .role = try allocator.dupe(u8, "user"), .content = compact_text };
-            const compact_resp = provider.complete(.{ .model = model_id, .messages = compact_msgs[0..2] }) catch |err| {
-                if (!format_json) try writer.print("\n[compaction failed: {}]\n", .{err});
-                return ProcessResult{ .text = try allocator.dupe(u8, ""), .exit_reason = try allocator.dupe(u8, "compaction_failed"), .input_tokens = input_tokens, .output_tokens = output_tokens };
-            };
-            defer compact_resp.deinit(allocator);
-            input_tokens += compact_resp.input_tokens orelse 0;
-            output_tokens += compact_resp.output_tokens orelse 0;
-            // Preserve system messages + summary + last user/assistant exchange
-            var new_msgs = std.ArrayList(llm.Message).initCapacity(allocator, system_indices.items.len + 3) catch unreachable;
+            const total_keep = system_indices.items.len + @min(keep_exchanges * 2, non_system_count);
+            var new_msgs = std.ArrayList(llm.Message).initCapacity(allocator, total_keep + 1) catch unreachable;
             for (system_indices.items) |idx| {
                 const orig = &session.messages.items[idx];
                 try new_msgs.append(allocator, .{ .role = try allocator.dupe(u8, orig.role), .content = try allocator.dupe(u8, orig.content) });
             }
-            const summary_text = try std.fmt.allocPrint(allocator, "Previous conversation summary:\n{s}", .{compact_resp.content});
-            try new_msgs.append(allocator, .{ .role = try allocator.dupe(u8, "system"), .content = summary_text });
-            // Keep last two non-system messages (user + assistant exchange)
+            // Omission marker
+            if (non_system_count > keep_exchanges * 2) {
+                const omitted = non_system_count - keep_exchanges * 2;
+                const marker = try std.fmt.allocPrint(allocator, "[{d} previous exchanges omitted for length]", .{omitted / 2});
+                try new_msgs.append(allocator, .{ .role = try allocator.dupe(u8, "system"), .content = marker });
+            }
+            // Keep last N non-system messages
             var kept: usize = 0;
             var i: usize = session.messages.items.len;
-            while (i > 0 and kept < 2) {
+            while (i > 0 and kept < keep_exchanges * 2) {
                 i -= 1;
                 const orig = &session.messages.items[i];
                 if (!std.mem.eql(u8, orig.role, "system")) {
@@ -438,6 +459,20 @@ pub fn processTurnWithTools(
                 .tool_calls = try tc_list.toOwnedSlice(allocator),
             };
             try session.addMessage(assistant_msg);
+        }
+
+        // Stop hook: verify response completeness
+        if (response.tool_calls.len == 0) {
+            const is_complete = checkStopHook(response.content, response.finish_reason);
+            if (!is_complete) {
+                std.log.debug("Stop hook triggered: response appears incomplete", .{});
+                const continue_msg = llm.Message{
+                    .role = try allocator.dupe(u8, "user"),
+                    .content = try allocator.dupe(u8, "Please continue — your previous response was cut off."),
+                };
+                try session.addMessage(continue_msg);
+                continue;
+            }
         }
 
         // Handle tool calls
