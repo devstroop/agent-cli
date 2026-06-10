@@ -22,10 +22,38 @@ const persistence = @import("persistence.zig");
 const context = @import("context.zig");
 const share = @import("share.zig");
 
-fn runExec(cmd: *cli.Cmd) !void {
+/// Shared state extracted from CLI flags for mode exec functions.
+const ExecState = struct {
+    config: config_mod.Config,
+    resolved: ModelResolution,
+    agent: agent_mod.Agent,
+    session: session_mod.Session,
+    prompt_text: []const u8,
+    prompt_allocated: bool,
+    format_json: bool,
+    skip_perms: bool,
+    project_dir: []const u8,
+    temperature: ?f64,
+    max_tokens: ?u64,
+    top_p: ?f64,
+    variant: ?[]const u8,
+
+    fn deinit(self: *ExecState, allocator: std.mem.Allocator) void {
+        self.config.deinit(allocator);
+        allocator.free(self.resolved.provider_id);
+        allocator.free(self.resolved.model_id);
+        if (self.resolved.api_key) |k| allocator.free(k);
+        if (self.resolved.owned_prov_cfg) self.resolved.prov_cfg.deinit(allocator);
+        self.agent.deinit(allocator);
+        self.session.deinit();
+        if (self.prompt_allocated and self.prompt_text.len > 0) allocator.free(self.prompt_text);
+        if (self.project_dir.len > 0) allocator.free(self.project_dir);
+    }
+};
+
+fn setupExec(cmd: *cli.Cmd, agent_name: []const u8) !ExecState {
     const message = cmd.flag("message", []const u8);
     const model_str = cmd.flag("model", []const u8);
-    const agent_name = cmd.flag("agent", []const u8);
     const format = cmd.flag("format", []const u8);
     const title_flag = cmd.flag("title", []const u8);
     const project_dir = cmd.flag("dir", []const u8);
@@ -34,7 +62,6 @@ fn runExec(cmd: *cli.Cmd) !void {
     const session_id = cmd.flag("session", []const u8);
     const fork_flag = cmd.flag("fork", bool);
     const variant_str = cmd.flag("variant", []const u8);
-    const thinking = cmd.flag("thinking", bool);
     const max_tokens_raw = cmd.flag("max-tokens", i32);
     const temperature_str = cmd.flag("temperature", []const u8);
     const top_p_str = cmd.flag("top-p", []const u8);
@@ -46,7 +73,7 @@ fn runExec(cmd: *cli.Cmd) !void {
     const allocator = cmd.allocator;
     const format_json = std.mem.eql(u8, format, "json");
 
-    // 1. Load config
+    // Load config
     const config_path = cmd.flag("config", []const u8);
     var config = if (config_path.len > 0) blk: {
         const result = config_mod.loadFile(cmd.io, allocator, config_path) catch |err| {
@@ -60,30 +87,18 @@ fn runExec(cmd: *cli.Cmd) !void {
     } else (try config_mod.find(cmd.io, allocator, if (project_dir.len > 0) project_dir else null)) orelse blk: {
         break :blk config_mod.Config.empty();
     };
-    defer config.deinit(allocator);
 
-    // 2. Resolve provider + model
-    var resolved = try resolveModelProvider(allocator, &config, model_str);
-    defer {
-        allocator.free(resolved.provider_id);
-        allocator.free(resolved.model_id);
-        if (resolved.api_key) |k| allocator.free(k);
-        if (resolved.owned_prov_cfg) resolved.prov_cfg.deinit(allocator);
-    }
+    // Resolve provider + model
+    const resolved = try resolveModelProvider(allocator, &config, model_str);
 
-    // 3. Resolve agent
-    var agent = try resolveAgent(allocator, config.agents, agent_name);
-    defer agent.deinit(allocator);
+    // Resolve agent
+    const agent = try resolveAgent(allocator, config.agents, agent_name);
 
-    // 4. Load or create session
-    var loaded_from_disk = false;
+    // Create session
     var session = if (session_id.len > 0) blk: {
-        const s = try persistence.loadSession(cmd.io, allocator, session_id);
-        loaded_from_disk = true;
-        break :blk s;
+        break :blk try persistence.loadSession(cmd.io, allocator, session_id);
     } else if (cont_flag) blk: {
         if (try persistence.loadLatestSession(cmd.io, allocator)) |s| {
-            loaded_from_disk = true;
             break :blk s;
         }
         try cmd.writer.print("Warning: no previous session found, starting fresh\n", .{});
@@ -96,42 +111,44 @@ fn runExec(cmd: *cli.Cmd) !void {
             .provider_id = resolved.provider_id,
         });
     };
-    defer session.deinit();
 
-    // 5. Fork: copy session under new ID
     if (fork_flag) {
         session.id = try persistence.generateId(cmd.io, allocator);
         session.slug = try allocator.dupe(u8, session.id);
     }
 
-    // 7. Build user message from --message, positional arg, or stdin pipe
-    const from_stdin = message.len == 0 and cmd.positional.items.len == 0;
+    // Build user message
+    var prompt_allocated = false;
     const prompt_text = if (message.len > 0) message else if (cmd.positional.items.len > 0) cmd.positional.items[0] else blk: {
+        prompt_allocated = true;
         if (readStdinPipe(cmd.reader, allocator)) |p| {
             if (p) |content| break :blk content;
         } else |_| {}
         break :blk "";
     };
-    defer if (from_stdin and prompt_text.len > 0) allocator.free(prompt_text);
 
-    // Set default title from prompt if no --title given
-    if (title_flag.len == 0 and prompt_text.len > 0 and !loaded_from_disk) {
+    // Set default title from prompt
+    if (title_flag.len == 0 and prompt_text.len > 0) {
         allocator.free(session.title);
         const truncated = if (prompt_text.len > 100) prompt_text[0..100] else prompt_text;
         session.title = try std.fmt.allocPrint(allocator, "Non-interactive: {s}", .{truncated});
     }
 
-    // 8. Build context and add messages to session
-    if (!loaded_from_disk) {
+    // Build context and add messages
+    {
         const ctx_text = try context.render(cmd.io, allocator, if (project_dir.len > 0) project_dir else null);
         try session.addMessage(.{ .role = try allocator.dupe(u8, "system"), .content = ctx_text });
-        try session.addMessage(.{ .role = try allocator.dupe(u8, "system"), .content = try allocator.dupe(u8, agent.system_prompt) });
+        // Append model-family-specific suffix to agent prompt
+        const model_family = agent_mod.detectModelFamily(resolved.model_id);
+        const suffix = agent_mod.modelFamilySuffix(model_family);
+        const full_prompt = if (suffix.len > 0) try std.fmt.allocPrint(allocator, "{s}{s}", .{ agent.system_prompt, suffix }) else agent.system_prompt;
+        try session.addMessage(.{ .role = try allocator.dupe(u8, "system"), .content = full_prompt });
     }
     if (prompt_text.len > 0) {
         try session.addMessage(.{ .role = try allocator.dupe(u8, "user"), .content = try allocator.dupe(u8, prompt_text) });
     }
 
-    // 9. Attach files (--file / -f)
+    // Attach files (--file / -f)
     {
         const file_flag = cmd.flag("file", []const u8);
         if (file_flag.len > 0) {
@@ -154,37 +171,35 @@ fn runExec(cmd: *cli.Cmd) !void {
         return error.NoPrompt;
     }
 
-    // 9. Print banner
+    return ExecState{
+        .config = config,
+        .resolved = resolved,
+        .agent = agent,
+        .session = session,
+        .prompt_text = prompt_text,
+        .prompt_allocated = prompt_allocated,
+        .format_json = format_json,
+        .skip_perms = skip_perms,
+        .project_dir = try allocator.dupe(u8, project_dir),
+        .temperature = temperature,
+        .max_tokens = max_tokens,
+        .top_p = top_p,
+        .variant = if (variant_str.len > 0) variant_str else null,
+    };
+}
+
+fn printBanner(writer: *std.Io.Writer, agent_name: ?[]const u8, model_id: []const u8, format_json: bool) !void {
     if (!format_json) {
-        const aname = session.agent orelse "default";
-        try cmd.writer.print("> {s} \xc2\xb7 {s}\n", .{ aname, resolved.model_id });
-        try cmd.writer.flush();
+        const aname = agent_name orelse "default";
+        try writer.print("> {s} \xc2\xb7 {s}\n", .{ aname, model_id });
+        try writer.flush();
     }
+}
 
-    // 10. Handle --command (slash command)
-    const command_str = cmd.flag("command", []const u8);
-    if (command_str.len > 0) {
-        if (try handleCommand(allocator, cmd.io, cmd.writer, &session, &resolved, &agent, config.agents, command_str, format_json)) |result| {
-            try persistence.saveSession(cmd.io, allocator, &session);
-            try persistence.saveLatestSession(cmd.io, allocator, session.id);
-            if (format_json) {
-                try writeJsonLine(cmd.writer, allocator, .{ .type = "stop", .finish_reason = result.exit_reason, .input_tokens = result.input_tokens, .output_tokens = result.output_tokens });
-            }
-            return;
-        }
-    }
-
-    // 11. Create provider and run processor loop
-    var provider = llm.Provider.init(allocator, cmd.io, resolved.prov_cfg, resolved.api_key);
-    const reader = if (skip_perms) null else cmd.reader;
-    const result = try processor.processTurn(allocator, cmd.io, &provider, &session, resolved.model_id, skip_perms, format_json, thinking, cmd.writer, reader, temperature, max_tokens, top_p, if (variant_str.len > 0) variant_str else null);
-    defer result.deinit(allocator);
-
-    // 11b. Save session
-    try persistence.saveSession(cmd.io, allocator, &session);
+fn saveAndShare(cmd: *cli.Cmd, allocator: std.mem.Allocator, session: *session_mod.Session, format_json: bool) !void {
+    try persistence.saveSession(cmd.io, allocator, session);
     try persistence.saveLatestSession(cmd.io, allocator, session.id);
 
-    // 12. Share if requested
     const share_flag = cmd.flag("share", bool);
     if (share_flag) {
         const share_url = share.shareSession(allocator, cmd.io, session.id, session.title) catch {
@@ -198,8 +213,157 @@ fn runExec(cmd: *cli.Cmd) !void {
             try cmd.writer.print("Share: {s}\n", .{share_url});
         }
     }
+}
 
-    if (format_json) {
+fn askExec(cmd: *cli.Cmd) !void {
+    const allocator = cmd.allocator;
+    var state = try setupExec(cmd, "ask");
+    defer state.deinit(allocator);
+
+    try printBanner(cmd.writer, state.session.agent, state.resolved.model_id, state.format_json);
+
+    var provider = llm.Provider.init(allocator, cmd.io, state.resolved.prov_cfg, state.resolved.api_key);
+    const result = try processor.processAsk(allocator, cmd.io, &provider, &state.session, state.resolved.model_id, state.format_json, cmd.writer, state.temperature, state.max_tokens, state.top_p, state.variant);
+    defer result.deinit(allocator);
+
+    try saveAndShare(cmd, allocator, &state.session, state.format_json);
+
+    if (state.format_json) {
+        try writeJsonLine(cmd.writer, allocator, .{ .type = "stop", .finish_reason = result.exit_reason, .input_tokens = result.input_tokens, .output_tokens = result.output_tokens });
+    }
+}
+
+fn planExec(cmd: *cli.Cmd) !void {
+    const allocator = cmd.allocator;
+    var state = try setupExec(cmd, "plan");
+    defer state.deinit(allocator);
+
+    try printBanner(cmd.writer, state.session.agent, state.resolved.model_id, state.format_json);
+
+    var provider = llm.Provider.init(allocator, cmd.io, state.resolved.prov_cfg, state.resolved.api_key);
+    const result = try processor.processAsk(allocator, cmd.io, &provider, &state.session, state.resolved.model_id, state.format_json, cmd.writer, state.temperature, state.max_tokens, state.top_p, state.variant);
+    defer result.deinit(allocator);
+
+    // Write plan to PLAN.md
+    if (result.text.len > 0) {
+        _ = tool.plan(allocator, cmd.io, result.text) catch {};
+        if (!state.format_json) {
+            try cmd.writer.print("\nPlan written to \x1b[1mPLAN.md\x1b[0m\n", .{});
+        }
+    }
+
+    try saveAndShare(cmd, allocator, &state.session, state.format_json);
+
+    if (state.format_json) {
+        try writeJsonLine(cmd.writer, allocator, .{ .type = "stop", .finish_reason = result.exit_reason, .input_tokens = result.input_tokens, .output_tokens = result.output_tokens });
+    }
+}
+
+fn reviewExec(cmd: *cli.Cmd) !void {
+    const allocator = cmd.allocator;
+    const session_id = cmd.flag("session", []const u8);
+    if (session_id.len == 0) {
+        try cmd.writer.print("Usage: agent review --session <session-id>\n", .{});
+        return;
+    }
+
+    // Load existing session
+    var target_session = persistence.loadSession(cmd.io, allocator, session_id) catch |err| {
+        try cmd.writer.print("Error: cannot load session '{s}': {}\n", .{ session_id, err });
+        return;
+    };
+    defer target_session.deinit();
+
+    // Build the analysis context
+    var state = try setupExec(cmd, "review");
+    defer state.deinit(allocator);
+
+    // Prepend the target session history to the analysis prompt
+    var sb = std.ArrayList(u8).initCapacity(allocator, 4096) catch unreachable;
+    defer sb.deinit(allocator);
+    try sb.appendSlice(allocator, "Review the following conversation session and provide a concise assessment:\n\n");
+    for (target_session.messages.items) |msg| {
+        if (std.mem.eql(u8, msg.role, "system")) continue;
+        try sb.appendSlice(allocator, msg.role);
+        try sb.appendSlice(allocator, ": ");
+        if (msg.content.len > 200) {
+            try sb.appendSlice(allocator, msg.content[0..200]);
+        } else {
+            try sb.appendSlice(allocator, msg.content);
+        }
+        try sb.appendSlice(allocator, "\n");
+    }
+    const analysis_text = try sb.toOwnedSlice(allocator);
+    defer allocator.free(analysis_text);
+    try state.session.addMessage(.{ .role = try allocator.dupe(u8, "user"), .content = analysis_text });
+
+    var provider = llm.Provider.init(allocator, cmd.io, state.resolved.prov_cfg, state.resolved.api_key);
+    const result = try processor.processAsk(allocator, cmd.io, &provider, &state.session, state.resolved.model_id, state.format_json, cmd.writer, state.temperature, state.max_tokens, state.top_p, state.variant);
+    defer result.deinit(allocator);
+
+    try saveAndShare(cmd, allocator, &state.session, state.format_json);
+}
+
+fn editExec(cmd: *cli.Cmd) !void {
+    const allocator = cmd.allocator;
+    var state = try setupExec(cmd, "build");
+    defer state.deinit(allocator);
+
+    try printBanner(cmd.writer, state.session.agent, state.resolved.model_id, state.format_json);
+
+    // Build filtered tool defs (read-only + write tools)
+    var params_arena = std.heap.ArenaAllocator.init(allocator);
+    defer params_arena.deinit();
+    const edit_tools = [_][]const u8{ "read", "write", "edit", "glob", "grep" };
+    const tools = try processor.buildToolDefsFiltered(allocator, params_arena.allocator(), &edit_tools);
+    defer {
+        for (tools) |*t| t.deinit(allocator);
+        allocator.free(tools);
+    }
+
+    var provider = llm.Provider.init(allocator, cmd.io, state.resolved.prov_cfg, state.resolved.api_key);
+    const reader = if (state.skip_perms) null else cmd.reader;
+    const result = try processor.processTurnWithTools(allocator, cmd.io, &provider, &state.session, state.resolved.model_id, state.skip_perms, state.format_json, false, cmd.writer, reader, state.temperature, state.max_tokens, state.top_p, state.variant, tools);
+    defer result.deinit(allocator);
+
+    try saveAndShare(cmd, allocator, &state.session, state.format_json);
+
+    if (state.format_json) {
+        try writeJsonLine(cmd.writer, allocator, .{ .type = "stop", .finish_reason = result.exit_reason, .input_tokens = result.input_tokens, .output_tokens = result.output_tokens });
+    }
+}
+
+fn runExec(cmd: *cli.Cmd) !void {
+    const allocator = cmd.allocator;
+    var state = try setupExec(cmd, "build");
+    defer state.deinit(allocator);
+
+    const show_thinking = cmd.flag("thinking", bool);
+
+    try printBanner(cmd.writer, state.session.agent, state.resolved.model_id, state.format_json);
+
+    // Handle --command (slash command)
+    const command_str = cmd.flag("command", []const u8);
+    if (command_str.len > 0) {
+        if (try handleCommand(allocator, cmd.io, cmd.writer, &state.session, &state.resolved, &state.agent, state.config.agents, command_str, state.format_json)) |result| {
+            try persistence.saveSession(cmd.io, allocator, &state.session);
+            try persistence.saveLatestSession(cmd.io, allocator, state.session.id);
+            if (state.format_json) {
+                try writeJsonLine(cmd.writer, allocator, .{ .type = "stop", .finish_reason = result.exit_reason, .input_tokens = result.input_tokens, .output_tokens = result.output_tokens });
+            }
+            return;
+        }
+    }
+
+    // Create provider and run processor loop
+    var provider = llm.Provider.init(allocator, cmd.io, state.resolved.prov_cfg, state.resolved.api_key);
+    const reader = if (state.skip_perms) null else cmd.reader;
+    const result = try processor.processTurn(allocator, cmd.io, &provider, &state.session, state.resolved.model_id, state.skip_perms, state.format_json, show_thinking, cmd.writer, reader, state.temperature, state.max_tokens, state.top_p, state.variant);
+    defer result.deinit(allocator);
+
+    try saveAndShare(cmd, allocator, &state.session, state.format_json);
+
+    if (state.format_json) {
         try writeJsonLine(cmd.writer, allocator, .{ .type = "stop", .finish_reason = result.exit_reason, .input_tokens = result.input_tokens, .output_tokens = result.output_tokens });
     }
 }
@@ -552,6 +716,73 @@ pub fn main(init: std.process.Init) !void {
     try run_cmd.addFlag(.{ .name = "top-p", .description = "Nucleus sampling parameter (0.0-1.0)", .type = .String, .default_value = .{ .String = "" } });
 
     try root.addSub(run_cmd);
+
+    // ask subcommand
+    {
+        const ask_cmd = try cli.Cmd.init(gpa, io, stdout, stdin, .{
+            .name = "ask",
+            .description = "Get a quick answer — no tools, just knowledge",
+        }, askExec);
+        try ask_cmd.addFlag(.{ .name = "message", .description = "The question to ask", .type = .String, .default_value = .{ .String = "" } });
+        try ask_cmd.addFlag(.{ .name = "model", .description = "Model to use (provider/model)", .shortcut = "m", .type = .String, .default_value = .{ .String = "" } });
+        try ask_cmd.addFlag(.{ .name = "dir", .description = "Project directory", .type = .String, .default_value = .{ .String = "" } });
+        try ask_cmd.addFlag(.{ .name = "format", .description = "Output format: default or json", .type = .String, .default_value = .{ .String = "default" } });
+        try ask_cmd.addFlag(.{ .name = "file", .description = "File(s) to attach", .shortcut = "f", .type = .String, .default_value = .{ .String = "" } });
+        try ask_cmd.addFlag(.{ .name = "config", .description = "Path to agent config.jsonc", .type = .String, .default_value = .{ .String = "" } });
+        try ask_cmd.addFlag(.{ .name = "max-tokens", .description = "Maximum output tokens", .type = .Int, .default_value = .{ .Int = 0 } });
+        try ask_cmd.addFlag(.{ .name = "temperature", .description = "Sampling temperature (0.0-2.0)", .type = .String, .default_value = .{ .String = "" } });
+        try ask_cmd.addFlag(.{ .name = "top-p", .description = "Nucleus sampling parameter (0.0-1.0)", .type = .String, .default_value = .{ .String = "" } });
+        try root.addSub(ask_cmd);
+    }
+
+    // plan subcommand
+    {
+        const plan_cmd = try cli.Cmd.init(gpa, io, stdout, stdin, .{
+            .name = "plan",
+            .description = "Create a structured plan and save to PLAN.md",
+        }, planExec);
+        try plan_cmd.addFlag(.{ .name = "message", .description = "The task to plan for", .type = .String, .default_value = .{ .String = "" } });
+        try plan_cmd.addFlag(.{ .name = "model", .description = "Model to use (provider/model)", .shortcut = "m", .type = .String, .default_value = .{ .String = "" } });
+        try plan_cmd.addFlag(.{ .name = "dir", .description = "Project directory", .type = .String, .default_value = .{ .String = "" } });
+        try plan_cmd.addFlag(.{ .name = "file", .description = "File(s) to attach", .shortcut = "f", .type = .String, .default_value = .{ .String = "" } });
+        try plan_cmd.addFlag(.{ .name = "config", .description = "Path to agent config.jsonc", .type = .String, .default_value = .{ .String = "" } });
+        try plan_cmd.addFlag(.{ .name = "max-tokens", .description = "Maximum output tokens", .type = .Int, .default_value = .{ .Int = 0 } });
+        try plan_cmd.addFlag(.{ .name = "temperature", .description = "Sampling temperature (0.0-2.0)", .type = .String, .default_value = .{ .String = "" } });
+        try root.addSub(plan_cmd);
+    }
+
+    // review subcommand
+    {
+        const review_cmd = try cli.Cmd.init(gpa, io, stdout, stdin, .{
+            .name = "review",
+            .description = "Review a session and provide assessment",
+        }, reviewExec);
+        try review_cmd.addFlag(.{ .name = "session", .description = "Session ID to review", .shortcut = "s", .type = .String, .default_value = .{ .String = "" } });
+        try review_cmd.addFlag(.{ .name = "model", .description = "Model to use (provider/model)", .shortcut = "m", .type = .String, .default_value = .{ .String = "" } });
+        try review_cmd.addFlag(.{ .name = "dir", .description = "Project directory", .type = .String, .default_value = .{ .String = "" } });
+        try review_cmd.addFlag(.{ .name = "config", .description = "Path to agent config.jsonc", .type = .String, .default_value = .{ .String = "" } });
+        try review_cmd.addFlag(.{ .name = "max-tokens", .description = "Maximum output tokens", .type = .Int, .default_value = .{ .Int = 0 } });
+        try review_cmd.addFlag(.{ .name = "temperature", .description = "Sampling temperature (0.0-2.0)", .type = .String, .default_value = .{ .String = "" } });
+        try root.addSub(review_cmd);
+    }
+
+    // edit subcommand
+    {
+        const edit_cmd = try cli.Cmd.init(gpa, io, stdout, stdin, .{
+            .name = "edit",
+            .description = "Edit files — execute mode constrained to read/write/edit tools",
+        }, editExec);
+        try edit_cmd.addFlag(.{ .name = "message", .description = "The edit instruction", .type = .String, .default_value = .{ .String = "" } });
+        try edit_cmd.addFlag(.{ .name = "model", .description = "Model to use (provider/model)", .shortcut = "m", .type = .String, .default_value = .{ .String = "" } });
+        try edit_cmd.addFlag(.{ .name = "dir", .description = "Project directory", .type = .String, .default_value = .{ .String = "" } });
+        try edit_cmd.addFlag(.{ .name = "format", .description = "Output format: default or json", .type = .String, .default_value = .{ .String = "default" } });
+        try edit_cmd.addFlag(.{ .name = "skip-permissions", .description = "Skip permission prompts (use with caution)", .type = .Bool, .default_value = .{ .Bool = false } });
+        try edit_cmd.addFlag(.{ .name = "file", .description = "File(s) to edit", .shortcut = "f", .type = .String, .default_value = .{ .String = "" } });
+        try edit_cmd.addFlag(.{ .name = "config", .description = "Path to agent config.jsonc", .type = .String, .default_value = .{ .String = "" } });
+        try edit_cmd.addFlag(.{ .name = "max-tokens", .description = "Maximum output tokens", .type = .Int, .default_value = .{ .Int = 0 } });
+        try edit_cmd.addFlag(.{ .name = "temperature", .description = "Sampling temperature (0.0-2.0)", .type = .String, .default_value = .{ .String = "" } });
+        try root.addSub(edit_cmd);
+    }
 
     // session subcommands
     {
