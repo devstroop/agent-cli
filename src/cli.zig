@@ -115,7 +115,10 @@ pub const Cmd = struct {
                 .String => |s| if (T == []const u8) s else default(T),
             };
         }
-        unreachable;
+        // Flag not registered on this subcommand — return the type default.
+        // This is safe because setupExec() may read flags shared across subcommands
+        // (e.g. --format on plan, --title on ask) that aren't all registered.
+        return default(T);
     }
 
     fn default(comptime T: type) T {
@@ -143,7 +146,16 @@ pub const Cmd = struct {
     fn findLeaf(self: *Cmd, args: *std.ArrayList([]const u8)) !*Cmd {
         var current = self;
         while (args.items.len > 0 and !std.mem.startsWith(u8, args.items[0], "-")) {
-            const next = current.subcommands.get(args.items[0]) orelse break;
+            const next = current.subcommands.get(args.items[0]) orelse {
+                // Non-flag arg that isn't a subcommand. If we haven't matched
+                // any subcommand yet, it's an invalid command name.
+                if (current == self) {
+                    try self.writer.print("Unknown command: {s}\n", .{args.items[0]});
+                    try self.writer.flush();
+                    std.process.exit(1);
+                }
+                break;
+            };
             _ = args.orderedRemove(0);
             current = next;
         }
