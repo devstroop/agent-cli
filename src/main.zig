@@ -263,7 +263,10 @@ fn planExec(cmd: *cli.Cmd) !void {
 
     // Write plan to PLAN.md
     if (result.text.len > 0) {
-        _ = tool.plan(allocator, cmd.io, result.text) catch {};
+        var plan_result = tool.plan(allocator, cmd.io, result.text) catch null;
+        if (plan_result) |*pr| {
+            defer pr.deinit(allocator);
+        }
         if (!state.format_json) {
             try cmd.writer.print("\nPlan written to \x1b[1mPLAN.md\x1b[0m\n", .{});
         }

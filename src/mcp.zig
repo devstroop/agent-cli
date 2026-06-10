@@ -142,7 +142,7 @@ pub const Client = struct {
         }
 
         const out = try output.toOwnedSlice(allocator);
-        return tool.Result{ .stdout = out, .stderr = "", .exit_code = 0 };
+        return tool.Result{ .stdout = out, .stderr = "", .exit_code = 0, .owns_stderr = false };
     }
 };
 

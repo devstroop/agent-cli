@@ -512,8 +512,6 @@ fn buildToolDefs(allocator: std.mem.Allocator, params_arena: std.mem.Allocator) 
     return result;
 }
 
-
-
 fn executeTool(allocator: std.mem.Allocator, io: std.Io, writer: *std.Io.Writer, reader: ?*std.Io.Reader, provider: *llm.Provider, model_id: []const u8, tc: llm.ToolCall, mcp_clients: []mcp.Client) !tool.Result {
     const args_parsed = try std.json.parseFromSlice(std.json.Value, allocator, tc.arguments, .{});
     defer args_parsed.deinit();
@@ -527,13 +525,13 @@ fn executeTool(allocator: std.mem.Allocator, io: std.Io, writer: *std.Io.Writer,
     if (std.mem.eql(u8, tc.name, "read")) {
         const file_path = args_obj.get("file_path") orelse return error.MissingArg;
         const content = try tool.readFile(io, allocator, file_path.string);
-        return tool.Result{ .stdout = content, .stderr = "", .exit_code = 0 };
+        return tool.Result{ .stdout = content, .stderr = "", .exit_code = 0, .owns_stderr = false };
     }
     if (std.mem.eql(u8, tc.name, "write")) {
         const file_path = args_obj.get("file_path") orelse return error.MissingArg;
         const content = args_obj.get("content") orelse return error.MissingArg;
         try tool.writeFile(io, content.string, file_path.string);
-        return tool.Result{ .stdout = "File written", .stderr = "", .exit_code = 0 };
+        return tool.Result.literal("File written", "", 0);
     }
     if (std.mem.eql(u8, tc.name, "glob")) {
         const pattern = args_obj.get("pattern") orelse return error.MissingArg;
@@ -586,8 +584,8 @@ fn executeTool(allocator: std.mem.Allocator, io: std.Io, writer: *std.Io.Writer,
     if (std.mem.eql(u8, tc.name, "task")) {
         const sub_name = args_obj.get("name") orelse return error.MissingArg;
         const prompt = args_obj.get("prompt") orelse return error.MissingArg;
-        const sub_agent_opt = agent_mod.getBuiltin(allocator, sub_name.string) catch return tool.Result{ .stdout = "", .stderr = "Unknown sub-agent", .exit_code = 1 };
-        if (sub_agent_opt == null) return tool.Result{ .stdout = "", .stderr = "Unknown sub-agent", .exit_code = 1 };
+        const sub_agent_opt = agent_mod.getBuiltin(allocator, sub_name.string) catch return tool.Result.literal("", "Unknown sub-agent", 1);
+        if (sub_agent_opt == null) return tool.Result.literal("", "Unknown sub-agent", 1);
         var sub_agent = sub_agent_opt.?;
         defer sub_agent.deinit(allocator);
         const sub_msgs = try allocator.alloc(llm.Message, 2);
@@ -596,7 +594,7 @@ fn executeTool(allocator: std.mem.Allocator, io: std.Io, writer: *std.Io.Writer,
         sub_msgs[1] = .{ .role = try allocator.dupe(u8, "user"), .content = try allocator.dupe(u8, prompt.string) };
         const sub_resp = try provider.complete(.{ .model = model_id, .messages = sub_msgs[0..2] });
         defer sub_resp.deinit(allocator);
-        return tool.Result{ .stdout = sub_resp.content, .stderr = "", .exit_code = 0 };
+        return tool.Result{ .stdout = sub_resp.content, .stderr = "", .exit_code = 0, .owns_stderr = false };
     }
 
     // MCP tool dispatch

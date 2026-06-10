@@ -4,10 +4,20 @@ pub const Result = struct {
     stdout: []const u8,
     stderr: []const u8,
     exit_code: u32,
+    /// Whether stdout was heap-allocated and should be freed on deinit.
+    owns_stdout: bool = true,
+    /// Whether stderr was heap-allocated and should be freed on deinit.
+    owns_stderr: bool = true,
+
+    /// Initialise a Result that owns NEITHER string (both are literals).
+    /// Use this for static success/error messages.
+    pub fn literal(stdout_text: []const u8, stderr_text: []const u8, code: u32) Result {
+        return .{ .stdout = stdout_text, .stderr = stderr_text, .exit_code = code, .owns_stdout = false, .owns_stderr = false };
+    }
 
     pub fn deinit(self: *const Result, allocator: std.mem.Allocator) void {
-        allocator.free(self.stdout);
-        allocator.free(self.stderr);
+        if (self.owns_stdout) allocator.free(self.stdout);
+        if (self.owns_stderr) allocator.free(self.stderr);
     }
 };
 
@@ -18,17 +28,11 @@ pub fn bash(allocator: std.mem.Allocator, io: std.Io, command: []const u8) !Resu
         .stdout = .pipe,
         .stderr = .pipe,
     });
-    const term = try child.wait(io);
-    const exit_code: u32 = switch (term) {
-        .exited => |code| code,
-        .signal => |sig| 128 + @as(u32, @intCast(@intFromEnum(sig))),
-        .stopped => 1,
-        .unknown => 1,
-    };
 
     var out_buf: [64 * 1024]u8 = .{0} ** (64 * 1024);
     var err_buf: [64 * 1024]u8 = .{0} ** (64 * 1024);
 
+    // Read stdout and stderr BEFORE waiting — child.wait() may close pipes in Zig 0.16
     const stdout_slice = if (child.stdout) |f| blk: {
         var reader = f.readerStreaming(io, &out_buf);
         const out_slice = try reader.interface.allocRemaining(allocator, std.Io.Limit.limited(out_buf.len));
@@ -40,6 +44,14 @@ pub fn bash(allocator: std.mem.Allocator, io: std.Io, command: []const u8) !Resu
         const err_slice = try reader.interface.allocRemaining(allocator, std.Io.Limit.limited(err_buf.len));
         break :blk err_slice;
     } else try allocator.dupe(u8, "");
+
+    const term = try child.wait(io);
+    const exit_code: u32 = switch (term) {
+        .exited => |code| code,
+        .signal => |sig| 128 + @as(u32, @intCast(@intFromEnum(sig))),
+        .stopped => 1,
+        .unknown => 1,
+    };
 
     return Result{
         .stdout = stdout_slice,
@@ -81,7 +93,7 @@ pub fn webFetch(allocator: std.mem.Allocator, io: std.Io, url: []const u8) !Resu
 
 pub fn question(allocator: std.mem.Allocator, _: std.Io, prompt: []const u8, stdin_content: []const u8) !Result {
     const out = try std.fmt.allocPrint(allocator, "Q: {s}\nA: {s}", .{ prompt, stdin_content });
-    return Result{ .stdout = out, .stderr = "", .exit_code = 0 };
+    return Result{ .stdout = out, .stderr = "", .exit_code = 0, .owns_stderr = false };
 }
 
 pub fn todoWrite(allocator: std.mem.Allocator, io: std.Io, todos: []const u8) !Result {
@@ -96,11 +108,11 @@ pub fn todoWrite(allocator: std.mem.Allocator, io: std.Io, todos: []const u8) !R
     }
     try list.appendSlice(allocator, todos);
     try dir.writeFile(io, .{ .sub_path = "TODO.md", .data = list.items });
-    return Result{ .stdout = "TODO.md updated", .stderr = "", .exit_code = 0 };
+    return Result.literal("TODO.md updated", "", 0);
 }
 
 pub fn skill(allocator: std.mem.Allocator, io: std.Io, name: []const u8) !Result {
-    const home = std.c.getenv("HOME") orelse return Result{ .stdout = "", .stderr = "No HOME", .exit_code = 1 };
+    const home = std.c.getenv("HOME") orelse return Result.literal("", "No HOME", 1);
     const home_span = std.mem.span(home);
     const paths = [_][]const u8{
         try std.fmt.allocPrint(allocator, "{s}/.config/agent/skills/{s}.md", .{ home_span, name }),
@@ -111,17 +123,17 @@ pub fn skill(allocator: std.mem.Allocator, io: std.Io, name: []const u8) !Result
     for (paths) |p| {
         defer allocator.free(p);
         const content = std.Io.Dir.cwd().readFileAlloc(io, p, allocator, std.Io.Limit.limited(65536)) catch continue;
-        return Result{ .stdout = content, .stderr = "", .exit_code = 0 };
+        return Result{ .stdout = content, .stderr = "", .exit_code = 0, .owns_stderr = false };
     }
     const err = try std.fmt.allocPrint(allocator, "Skill '{s}' not found", .{name});
-    return Result{ .stdout = "", .stderr = err, .exit_code = 1 };
+    return Result{ .stdout = "", .stderr = err, .exit_code = 1, .owns_stdout = false };
 }
 
 /// List available skills with their descriptions (metadata only).
 /// Scans ~/.config/agent/skills/ and .agent/skills/ for .md files,
 /// extracting the first `# Heading` as the description.
 pub fn skillList(allocator: std.mem.Allocator, io: std.Io) !Result {
-    const home = std.c.getenv("HOME") orelse return Result{ .stdout = "", .stderr = "No HOME", .exit_code = 1 };
+    const home = std.c.getenv("HOME") orelse return Result.literal("", "No HOME", 1);
     const home_span = std.mem.span(home);
 
     var buf = std.ArrayList(u8).initCapacity(allocator, 4096) catch unreachable;
@@ -166,14 +178,14 @@ pub fn skillList(allocator: std.mem.Allocator, io: std.Io) !Result {
     }
 
     const out = try buf.toOwnedSlice(allocator);
-    return Result{ .stdout = out, .stderr = "", .exit_code = 0 };
+    return Result{ .stdout = out, .stderr = "", .exit_code = 0, .owns_stderr = false };
 }
 
 pub fn plan(allocator: std.mem.Allocator, io: std.Io, plan_text: []const u8) !Result {
     const content = try std.fmt.allocPrint(allocator, "# Plan\n\n{s}\n", .{plan_text});
     const dir = std.Io.Dir.cwd();
     dir.writeFile(io, .{ .sub_path = "PLAN.md", .data = content }) catch {};
-    return Result{ .stdout = content, .stderr = "", .exit_code = 0 };
+    return Result{ .stdout = content, .stderr = "", .exit_code = 0, .owns_stderr = false };
 }
 
 pub fn webSearch(allocator: std.mem.Allocator, io: std.Io, query: []const u8) !Result {
@@ -195,13 +207,13 @@ pub fn editFile(allocator: std.mem.Allocator, io: std.Io, file_path: []const u8,
     const dir = std.Io.Dir.cwd();
     const content = std.Io.Dir.readFileAlloc(dir, io, file_path, allocator, std.Io.Limit.limited(10 * 1024 * 1024)) catch |err| {
         const err_msg = try std.fmt.allocPrint(allocator, "Error reading file '{s}': {}", .{ file_path, err });
-        return Result{ .stdout = "", .stderr = err_msg, .exit_code = 1 };
+        return Result{ .stdout = "", .stderr = err_msg, .exit_code = 1, .owns_stdout = false };
     };
     defer allocator.free(content);
 
     const idx = std.mem.indexOf(u8, content, old_string) orelse {
         const err_msg = try std.fmt.allocPrint(allocator, "Could not find old_string in '{s}'", .{file_path});
-        return Result{ .stdout = "", .stderr = err_msg, .exit_code = 1 };
+        return Result{ .stdout = "", .stderr = err_msg, .exit_code = 1, .owns_stdout = false };
     };
 
     var result = try std.ArrayList(u8).initCapacity(allocator, content.len + new_string.len - old_string.len);
@@ -213,5 +225,5 @@ pub fn editFile(allocator: std.mem.Allocator, io: std.Io, file_path: []const u8,
     try dir.writeFile(io, .{ .sub_path = file_path, .data = result.items });
     result.deinit(allocator);
 
-    return Result{ .stdout = "File updated successfully", .stderr = "", .exit_code = 0 };
+    return Result.literal("File updated successfully", "", 0);
 }
