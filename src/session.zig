@@ -12,6 +12,8 @@ pub const Session = struct {
     messages: std.ArrayList(llm.Message) = .empty,
     total_input_tokens: u64 = 0,
     total_output_tokens: u64 = 0,
+    /// Skills already loaded this session (prevents re-loading same skill body)
+    loaded_skills: std.StringHashMap(void) = undefined,
 
     pub fn init(allocator: std.mem.Allocator, opts: CreateOptions) !Session {
         const id = if (opts.id) |sid|
@@ -28,6 +30,7 @@ pub const Session = struct {
             .agent = if (opts.agent) |a| try allocator.dupe(u8, a) else null,
             .model_id = if (opts.model_id) |m| try allocator.dupe(u8, m) else null,
             .provider_id = if (opts.provider_id) |p| try allocator.dupe(u8, p) else null,
+            .loaded_skills = std.StringHashMap(void).init(allocator),
         };
     }
 
@@ -39,6 +42,12 @@ pub const Session = struct {
         if (self.agent) |v| a.free(v);
         if (self.model_id) |v| a.free(v);
         if (self.provider_id) |v| a.free(v);
+        // Free loaded_skills keys (values are void, no deinit needed)
+        {
+            var it = self.loaded_skills.keyIterator();
+            while (it.next()) |key| a.free(key.*);
+            self.loaded_skills.deinit();
+        }
         for (self.messages.items) |*msg| msg.deinit(a);
         self.messages.deinit(a);
     }

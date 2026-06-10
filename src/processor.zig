@@ -515,18 +515,15 @@ pub fn processTurnWithTools(
                 defer tool_result.deinit(allocator);
                 const is_err = tool_result.exit_code != 0;
 
-                // Progressive disclosure: inject skill body as system message
-                // so it survives compaction and persists across turns.
-                if (std.mem.eql(u8, tc.name, "skill") and !is_err) {
-                    try session.addMessage(.{
-                        .role = try allocator.dupe(u8, "system"),
-                        .content = try allocator.dupe(u8, tool_result.stdout),
-                    });
-                }
-
                 // Expand !command lines in tool output (bash ! expansion)
                 const expanded = try expandBangCommands(allocator, io, tool_result.stdout);
                 try session.addToolResult(tc.id, expanded, is_err);
+
+                // Progressive skill disclosure: inject skill bodies as system
+                // messages so they persist through compaction (tool results don't).
+                // Two triggers: (1) explicit `skill` tool call, (2) any tool whose
+                // name matches a known skill file auto-loads that skill.
+                try injectSkillIfTriggered(allocator, io, session, tc, if (is_err) "" else tool_result.stdout);
             }
             continue;
         }
@@ -593,6 +590,53 @@ fn expandBangCommands(allocator: std.mem.Allocator, io: std.Io, stdout: []const 
     return result.toOwnedSlice(allocator);
 }
 
+/// Progressive skill disclosure: when a skill body is loaded (via `skill` tool
+/// or a tool whose name matches a skill file), inject it as a system message
+/// so it persists through compaction. Tool results are ephemeral and get pruned.
+fn injectSkillIfTriggered(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    session: *session_mod.Session,
+    tc: llm.ToolCall,
+    skill_stdout: []const u8,
+) !void {
+    // Trigger 1: explicit `skill` tool — inject its output as a system message
+    if (std.mem.eql(u8, tc.name, "skill")) {
+        const parsed = std.json.parseFromSlice(std.json.Value, allocator, tc.arguments, .{}) catch return;
+        defer parsed.deinit();
+        if (parsed.value == .object) {
+            if (parsed.value.object.get("name")) |nv| {
+                if (nv == .string) {
+                    const name = nv.string;
+                    if (!session.loaded_skills.contains(name)) {
+                        try session.loaded_skills.put(try allocator.dupe(u8, name), {});
+                        const msg = llm.Message{
+                            .role = try allocator.dupe(u8, "system"),
+                            .content = try std.fmt.allocPrint(allocator, "[Skill: {s}]\n{s}", .{ name, skill_stdout }),
+                        };
+                        try session.addMessage(msg);
+                    }
+                }
+            }
+        }
+        return;
+    }
+
+    // Trigger 2: auto-load — tool name matches a skill file, load it if not cached
+    if (!session.loaded_skills.contains(tc.name)) {
+        const auto_body = tool.skill(allocator, io, tc.name) catch return;
+        defer auto_body.deinit(allocator);
+        if (auto_body.exit_code == 0 and auto_body.stdout.len > 0) {
+            try session.loaded_skills.put(try allocator.dupe(u8, tc.name), {});
+            const msg = llm.Message{
+                .role = try allocator.dupe(u8, "system"),
+                .content = try std.fmt.allocPrint(allocator, "[Skill auto-loaded: {s}]\n{s}", .{ tc.name, auto_body.stdout }),
+            };
+            try session.addMessage(msg);
+        }
+    }
+}
+
 fn buildToolDefs(allocator: std.mem.Allocator, params_arena: std.mem.Allocator) ![]llm.ToolDef {
     const result = try allocator.alloc(llm.ToolDef, dispatch_table.len);
     for (dispatch_table, 0..) |dt, i| {
@@ -657,7 +701,7 @@ fn executeTool(allocator: std.mem.Allocator, io: std.Io, writer: *std.Io.Writer,
     }
     if (std.mem.eql(u8, tc.name, "skill")) {
         const name = args_obj.get("name") orelse return error.MissingArg;
-        return tool.skillCached(allocator, io, name.string);
+        return tool.skill(allocator, io, name.string);
     }
     if (std.mem.eql(u8, tc.name, "todowrite")) {
         const todos = args_obj.get("todos") orelse return error.MissingArg;
