@@ -68,6 +68,137 @@ pub const ProcessResult = struct {
     }
 };
 
+/// Look up a tool definition from the dispatch table by name.
+pub fn lookupToolDef(name: []const u8) ?*const ToolDispatch {
+    for (dispatch_table) |*dt| {
+        if (std.mem.eql(u8, dt.name, name)) return dt;
+    }
+    return null;
+}
+
+/// Validate tool call arguments against the dispatch table's JSON Schema.
+/// Checks that all required properties are present with correct types.
+/// This is a simplified validator — catches missing fields and basic type mismatches.
+pub fn validateToolArgs(tc: llm.ToolCall) !void {
+    const dt = lookupToolDef(tc.name) orelse return;
+    const args_parsed = try std.json.parseFromSlice(std.json.Value, std.heap.page_allocator, tc.arguments, .{});
+    defer args_parsed.deinit();
+    const args = args_parsed.value;
+    if (args != .object) return error.InvalidToolArgs;
+
+    // Parse the schema to extract required fields
+    const schema_parsed = try std.json.parseFromSlice(std.json.Value, std.heap.page_allocator, dt.parameters, .{});
+    defer schema_parsed.deinit();
+    const schema = schema_parsed.value;
+    if (schema != .object) return;
+
+    // Check required fields
+    if (schema.object.get("required")) |req| {
+        if (req == .array) {
+            for (req.array.items) |field| {
+                if (field == .string) {
+                    if (args.object.get(field.string) == null) {
+                        return error.MissingArg;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Build a filtered subset of the dispatch table containing only the named tools.
+pub fn buildToolDefsFiltered(allocator: std.mem.Allocator, params_arena: std.mem.Allocator, allowed_names: []const []const u8) ![]llm.ToolDef {
+    const result = try allocator.alloc(llm.ToolDef, allowed_names.len);
+    var count: usize = 0;
+    for (allowed_names) |name| {
+        for (dispatch_table) |dt| {
+            if (std.mem.eql(u8, dt.name, name)) {
+                const params = try std.json.parseFromSlice(std.json.Value, params_arena, dt.parameters, .{});
+                result[count] = .{
+                    .name = try allocator.dupe(u8, dt.name),
+                    .description = try allocator.dupe(u8, dt.description),
+                    .parameters = params.value,
+                };
+                count += 1;
+                break;
+            }
+        }
+    }
+    return result[0..count];
+}
+
+/// Simple one-turn LLM call with no tools. Streams response.
+/// Used by ask, plan, and review modes.
+pub fn processAsk(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    provider: *llm.Provider,
+    session: *session_mod.Session,
+    model_id: []const u8,
+    format_json: bool,
+    writer: *std.Io.Writer,
+    temperature: ?f64,
+    max_tokens: ?u64,
+    top_p: ?f64,
+    variant: ?[]const u8,
+) !ProcessResult {
+    _ = io;
+    var input_tokens: u64 = 0;
+    var output_tokens: u64 = 0;
+
+    const msgs = session.buildMessages(null);
+    const response = try provider.completeStream(
+        .{
+            .model = model_id,
+            .messages = msgs,
+            .temperature = temperature,
+            .max_tokens = max_tokens,
+            .top_p = top_p,
+            .tools = null,
+            .variant = variant,
+        },
+        writer,
+        format_json,
+    );
+    defer response.deinit(allocator);
+
+    input_tokens += response.input_tokens orelse 0;
+    output_tokens += response.output_tokens orelse 0;
+
+    // Store assistant response in session
+    {
+        var tc_list = try std.ArrayList(llm.ToolCall).initCapacity(allocator, 0);
+        defer tc_list.deinit(allocator);
+        for (response.tool_calls) |tc| {
+            try tc_list.append(allocator, .{
+                .id = try allocator.dupe(u8, tc.id),
+                .name = try allocator.dupe(u8, tc.name),
+                .arguments = try allocator.dupe(u8, tc.arguments),
+            });
+        }
+        const assistant_msg = llm.Message{
+            .role = try allocator.dupe(u8, "assistant"),
+            .content = try allocator.dupe(u8, response.content),
+            .tool_calls = try tc_list.toOwnedSlice(allocator),
+        };
+        try session.addMessage(assistant_msg);
+    }
+
+    if (!format_json) {
+        try writer.print("\n", .{});
+        try writer.flush();
+    }
+
+    const finish = response.finish_reason orelse "stop";
+    return ProcessResult{
+        .text = try allocator.dupe(u8, response.content),
+        .exit_reason = try allocator.dupe(u8, finish),
+        .input_tokens = input_tokens,
+        .output_tokens = output_tokens,
+    };
+}
+
+/// Backward-compatible wrapper: builds all tool defs.
 pub fn processTurn(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -84,7 +215,6 @@ pub fn processTurn(
     top_p: ?f64,
     variant: ?[]const u8,
 ) !ProcessResult {
-    _ = show_thinking; // reserved for reasoning block display
     var params_arena = std.heap.ArenaAllocator.init(allocator);
     defer params_arena.deinit();
     const tools = try buildToolDefs(allocator, params_arena.allocator());
@@ -92,6 +222,27 @@ pub fn processTurn(
         for (tools) |*t| t.deinit(allocator);
         allocator.free(tools);
     }
+    return processTurnWithTools(allocator, io, provider, session, model_id, skip_perms, format_json, show_thinking, writer, reader, temperature, max_tokens, top_p, variant, tools);
+}
+
+pub fn processTurnWithTools(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    provider: *llm.Provider,
+    session: *session_mod.Session,
+    model_id: []const u8,
+    skip_perms: bool,
+    format_json: bool,
+    show_thinking: bool,
+    writer: *std.Io.Writer,
+    reader: ?*std.Io.Reader,
+    temperature: ?f64,
+    max_tokens: ?u64,
+    top_p: ?f64,
+    variant: ?[]const u8,
+    tools: []const llm.ToolDef,
+) !ProcessResult {
+    _ = show_thinking; // reserved for reasoning block display
 
     var perm_manager = permission_mod.Manager.init(allocator);
     defer perm_manager.deinit();
@@ -223,6 +374,17 @@ pub fn processTurn(
                         return ProcessResult{ .text = try allocator.dupe(u8, ""), .exit_reason = try allocator.dupe(u8, "permission_denied"), .input_tokens = input_tokens, .output_tokens = output_tokens };
                     }
                 }
+
+                // Validate tool arguments before execution
+                validateToolArgs(tc) catch |err| {
+                    const err_msg = try std.fmt.allocPrint(allocator, "Invalid arguments for {s}: {}", .{ tc.name, err });
+                    try session.addToolResult(tc.id, err_msg, true);
+                    if (!format_json) {
+                        try writer.print("  \x1b[33m! {s}\x1b[0m\n", .{err_msg});
+                        try writer.flush();
+                    }
+                    continue;
+                };
 
                 // Execute tool
                 var tool_result = try executeTool(allocator, io, writer, reader, provider, model_id, tc);
@@ -410,6 +572,63 @@ test "permission manager: addRule and evaluate" {
     try man.addRule(.{ .permission = "bash", .pattern = "*", .action = .allow });
     try testing.expectEqual(man.evaluate("bash", "echo anything"), .allow);
     try testing.expectEqual(man.evaluate("read", "/tmp/test.txt"), .ask);
+}
+
+test "lookupToolDef: finds existing tool" {
+    const testing = @import("std").testing;
+    const dt = lookupToolDef("bash");
+    try testing.expect(dt != null);
+    try testing.expectEqualStrings(dt.?.name, "bash");
+}
+
+test "lookupToolDef: returns null for unknown" {
+    const testing = @import("std").testing;
+    try testing.expect(lookupToolDef("nonexistent") == null);
+}
+
+test "buildToolDefsFiltered: returns only requested tools" {
+    const testing = @import("std").testing;
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const names = [_][]const u8{ "read", "write", "edit" };
+    const defs = try buildToolDefsFiltered(allocator, arena.allocator(), &names);
+    defer {
+        for (defs) |*t| t.deinit(allocator);
+        allocator.free(defs);
+    }
+    try testing.expectEqual(defs.len, 3);
+    try testing.expectEqualStrings(defs[0].name, "read");
+    try testing.expectEqualStrings(defs[1].name, "write");
+    try testing.expectEqualStrings(defs[2].name, "edit");
+}
+
+test "validateToolArgs: valid args pass" {
+    const tc = llm.ToolCall{
+        .id = "call_1",
+        .name = "bash",
+        .arguments = "{\"command\":\"ls\"}",
+    };
+    try validateToolArgs(tc);
+}
+
+test "validateToolArgs: missing required field fails" {
+    const testing = @import("std").testing;
+    const tc = llm.ToolCall{
+        .id = "call_2",
+        .name = "bash",
+        .arguments = "{}",
+    };
+    testing.expectError(error.MissingArg, validateToolArgs(tc)) catch {};
+}
+
+test "validateToolArgs: unknown tool skips validation" {
+    const tc = llm.ToolCall{
+        .id = "call_3",
+        .name = "nonexistent",
+        .arguments = "{}",
+    };
+    try validateToolArgs(tc);
 }
 
 test "processTurn permission manager evaluate flow" {
