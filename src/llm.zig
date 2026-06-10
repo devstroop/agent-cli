@@ -878,6 +878,105 @@ test "processSSEData: tool call arguments accumulated across chunks" {
     try testing.expectEqualStrings(args, "{\"command\":\"ls\"}");
 }
 
+test "parseChatResponse null content field" {
+    const testing = @import("std").testing;
+    const allocator = testing.allocator;
+
+    const json_text =
+        \\{"id":"chat-3","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":null},"finish_reason":"stop"}]}
+    ;
+
+    const resp = try parseChatResponse(allocator, json_text);
+    defer resp.deinit(allocator);
+
+    try testing.expectEqualStrings(resp.content, "");
+    try testing.expectEqual(resp.tool_calls.len, 0);
+}
+
+test "parseChatResponse missing content field" {
+    const testing = @import("std").testing;
+    const allocator = testing.allocator;
+
+    const json_text =
+        \\{"id":"chat-4","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant"},"finish_reason":"stop"}]}
+    ;
+
+    const resp = try parseChatResponse(allocator, json_text);
+    defer resp.deinit(allocator);
+
+    try testing.expectEqualStrings(resp.content, "");
+    try testing.expectEqual(resp.tool_calls.len, 0);
+}
+
+test "parseChatResponse empty tool_calls array" {
+    const testing = @import("std").testing;
+    const allocator = testing.allocator;
+
+    const json_text =
+        \\{"id":"chat-5","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"hi","tool_calls":[]},"finish_reason":"stop"}]}
+    ;
+
+    const resp = try parseChatResponse(allocator, json_text);
+    defer resp.deinit(allocator);
+
+    try testing.expectEqualStrings(resp.content, "hi");
+    try testing.expectEqual(resp.tool_calls.len, 0);
+}
+
+test "parseChatResponse no finish_reason" {
+    const testing = @import("std").testing;
+    const allocator = testing.allocator;
+
+    const json_text =
+        \\{"id":"chat-6","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"}}]}
+    ;
+
+    const resp = try parseChatResponse(allocator, json_text);
+    defer resp.deinit(allocator);
+
+    try testing.expectEqualStrings(resp.content, "ok");
+    try testing.expectEqual(resp.finish_reason, null);
+}
+
+test "parseChatResponse no usage" {
+    const testing = @import("std").testing;
+    const allocator = testing.allocator;
+
+    const json_text =
+        \\{"id":"chat-7","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}]}
+    ;
+
+    const resp = try parseChatResponse(allocator, json_text);
+    defer resp.deinit(allocator);
+
+    try testing.expectEqual(resp.input_tokens, null);
+    try testing.expectEqual(resp.output_tokens, null);
+}
+
+test "parseChatResponse missing choices returns error" {
+    const testing = @import("std").testing;
+    const allocator = testing.allocator;
+
+    const json_text =
+        \\{"id":"chat-8","object":"chat.completion"}
+    ;
+
+    const result = parseChatResponse(allocator, json_text);
+    try testing.expectError(error.InvalidResponse, result);
+}
+
+test "parseChatResponse empty choices returns error" {
+    const testing = @import("std").testing;
+    const allocator = testing.allocator;
+
+    const json_text =
+        \\{"id":"chat-9","object":"chat.completion","choices":[]}
+    ;
+
+    const result = parseChatResponse(allocator, json_text);
+    try testing.expectError(error.InvalidResponse, result);
+}
+
 test "ToolCallAccum.deinit frees owned fields" {
     const testing = @import("std").testing;
     const allocator = testing.allocator;
