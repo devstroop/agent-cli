@@ -111,6 +111,32 @@ pub fn todoWrite(allocator: std.mem.Allocator, io: std.Io, todos: []const u8) !R
     return Result.literal("TODO.md updated", "", 0);
 }
 
+/// Process-lifetime cache for loaded skill bodies.
+/// Skills are loaded once and cached; subsequent loads hit the cache.
+var skill_cache: ?std.StringHashMap([]const u8) = null;
+var skill_cache_arena: std.heap.ArenaAllocator = undefined;
+
+fn ensureSkillCache() void {
+    if (skill_cache != null) return;
+    skill_cache_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    skill_cache = std.StringHashMap([]const u8).init(skill_cache_arena.allocator());
+}
+
+/// Load a skill's full body, with caching. First call reads from disk;
+/// subsequent calls for the same skill return the cached body.
+pub fn skillCached(allocator: std.mem.Allocator, io: std.Io, name: []const u8) !Result {
+    ensureSkillCache();
+    if (skill_cache.?.get(name)) |body| {
+        return Result{ .stdout = body, .stderr = "", .exit_code = 0, .owns_stdout = false, .owns_stderr = false };
+    }
+    const result = try skill(allocator, io, name);
+    if (result.exit_code == 0) {
+        const duped = skill_cache_arena.allocator().dupe(u8, result.stdout) catch return result;
+        skill_cache.?.put(name, duped) catch {};
+    }
+    return result;
+}
+
 pub fn skill(allocator: std.mem.Allocator, io: std.Io, name: []const u8) !Result {
     const home = std.c.getenv("HOME") orelse return Result.literal("", "No HOME", 1);
     const home_span = std.mem.span(home);

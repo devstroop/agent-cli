@@ -515,6 +515,15 @@ pub fn processTurnWithTools(
                 defer tool_result.deinit(allocator);
                 const is_err = tool_result.exit_code != 0;
 
+                // Progressive disclosure: inject skill body as system message
+                // so it survives compaction and persists across turns.
+                if (std.mem.eql(u8, tc.name, "skill") and !is_err) {
+                    try session.addMessage(.{
+                        .role = try allocator.dupe(u8, "system"),
+                        .content = try allocator.dupe(u8, tool_result.stdout),
+                    });
+                }
+
                 // Expand !command lines in tool output (bash ! expansion)
                 const expanded = try expandBangCommands(allocator, io, tool_result.stdout);
                 try session.addToolResult(tc.id, expanded, is_err);
@@ -648,7 +657,7 @@ fn executeTool(allocator: std.mem.Allocator, io: std.Io, writer: *std.Io.Writer,
     }
     if (std.mem.eql(u8, tc.name, "skill")) {
         const name = args_obj.get("name") orelse return error.MissingArg;
-        return tool.skill(allocator, io, name.string);
+        return tool.skillCached(allocator, io, name.string);
     }
     if (std.mem.eql(u8, tc.name, "todowrite")) {
         const todos = args_obj.get("todos") orelse return error.MissingArg;
