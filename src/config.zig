@@ -386,7 +386,10 @@ fn parseProviderOptions(allocator: std.mem.Allocator, val: json.Value) !Provider
 
 fn parseModelConfig(allocator: std.mem.Allocator, val: json.Value) !ModelConfig {
     if (val != .object) return error.InvalidConfig;
-    const name = try allocator.dupe(u8, val.object.get("name").?.string);
+    const name = if (val.object.get("name")) |n|
+        try allocator.dupe(u8, n.string)
+    else
+        try allocator.dupe(u8, "unknown");
     return ModelConfig{ .name = name };
 }
 
