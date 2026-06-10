@@ -51,8 +51,8 @@ agent run --message "Write a poem" --temperature 0.8 --max-tokens 200 --top-p 0.
 # Use a different agent
 agent run --message "Plan this task" --agent plan
 
-# Skip permission prompts (dangerous)
-agent run --message "Run this command" --dangerously-skip-permissions
+# Skip permission prompts
+agent run --message "Run this command" --skip-permissions
 
 # Custom config path
 agent run --message "Hello" --config ~/.config/agent/config.jsonc

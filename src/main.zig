@@ -20,7 +20,7 @@ fn runExec(cmd: *cli.Cmd) !void {
     const format = cmd.flag("format", []const u8);
     const title_flag = cmd.flag("title", []const u8);
     const project_dir = cmd.flag("dir", []const u8);
-    const dangerously_skip_perms = cmd.flag("dangerously-skip-permissions", bool);
+    const skip_perms = cmd.flag("skip-permissions", bool);
     const cont_flag = cmd.flag("continue", bool);
     const session_id = cmd.flag("session", []const u8);
     const fork_flag = cmd.flag("fork", bool);
@@ -167,8 +167,8 @@ fn runExec(cmd: *cli.Cmd) !void {
 
     // 11. Create provider and run processor loop
     var provider = llm.Provider.init(allocator, cmd.io, resolved.prov_cfg, resolved.api_key);
-    const reader = if (dangerously_skip_perms) null else cmd.reader;
-    const result = try processor.processTurn(allocator, cmd.io, &provider, &session, resolved.model_id, dangerously_skip_perms, format_json, thinking, cmd.writer, reader, temperature, max_tokens, top_p, if (variant_str.len > 0) variant_str else null);
+    const reader = if (skip_perms) null else cmd.reader;
+    const result = try processor.processTurn(allocator, cmd.io, &provider, &session, resolved.model_id, skip_perms, format_json, thinking, cmd.writer, reader, temperature, max_tokens, top_p, if (variant_str.len > 0) variant_str else null);
     defer result.deinit(allocator);
 
     // 11b. Save session
@@ -524,7 +524,7 @@ pub fn main(init: std.process.Init) !void {
     try run_cmd.addFlag(.{ .name = "dir", .description = "Project directory", .type = .String, .default_value = .{ .String = "" } });
     try run_cmd.addFlag(.{ .name = "format", .description = "Output format: default or json", .type = .String, .default_value = .{ .String = "default" } });
     try run_cmd.addFlag(.{ .name = "thinking", .description = "Show reasoning/thinking blocks", .type = .Bool, .default_value = .{ .Bool = false } });
-    try run_cmd.addFlag(.{ .name = "dangerously-skip-permissions", .description = "Auto-approve all permissions (use with caution)", .type = .Bool, .default_value = .{ .Bool = false } });
+    try run_cmd.addFlag(.{ .name = "skip-permissions", .description = "Skip permission prompts (use with caution)", .type = .Bool, .default_value = .{ .Bool = false } });
     try run_cmd.addFlag(.{ .name = "title", .description = "Session title", .type = .String, .default_value = .{ .String = "" } });
     try run_cmd.addFlag(.{ .name = "variant", .description = "Model variant (reasoning effort)", .type = .String, .default_value = .{ .String = "" } });
     try run_cmd.addFlag(.{ .name = "command", .description = "Slash command to execute", .type = .String, .default_value = .{ .String = "" } });
