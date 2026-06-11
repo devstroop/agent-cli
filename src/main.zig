@@ -21,6 +21,7 @@ const processor = @import("processor.zig");
 const persistence = @import("persistence.zig");
 const context = @import("context.zig");
 const share = @import("share.zig");
+const wizard = @import("wizard.zig");
 
 /// Shared state extracted from CLI flags for mode exec functions.
 const ExecState = struct {
@@ -591,6 +592,10 @@ fn resolveAgent(allocator: std.mem.Allocator, io: std.Io, config_agents: ?std.St
     return (try agent_mod.getBuiltin(allocator, "build")).?;
 }
 
+fn configInitExec(cmd: *cli.Cmd) !void {
+    try wizard.run(cmd.allocator, cmd.io, cmd.writer, cmd.reader);
+}
+
 fn stdinIsTty() bool {
     if (native_os == .windows) {
         const handle = Win32Console.GetStdHandle(Win32Console.STD_INPUT_HANDLE) orelse return false;
@@ -921,6 +926,24 @@ pub fn main(init: std.process.Init) !void {
             .{ .name = "config", .type = .String, .description = "Path to config file", .default_value = .{ .String = "" } },
         });
         try root.addSub(models_cmd);
+    }
+
+    // config command
+    {
+        const config_cmd = try cli.Cmd.init(gpa, io, stdout, stdin, .{
+            .name = "config",
+            .description = "Manage agent configuration",
+        }, struct {
+            fn exec(_: *cli.Cmd) !void {}
+        }.exec);
+
+        const init_cmd = try cli.Cmd.init(gpa, io, stdout, stdin, .{
+            .name = "init",
+            .description = "Interactive setup wizard — creates ~/.config/agent/config.jsonc",
+        }, configInitExec);
+        try config_cmd.addSub(init_cmd);
+
+        try root.addSub(config_cmd);
     }
 
     var args_iter = try std.process.Args.iterateAllocator(init.minimal.args, gpa);
