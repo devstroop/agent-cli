@@ -363,6 +363,29 @@ pub fn processTurnWithConfig(
     return processTurnWithTools(allocator, io, provider, session, model_id, skip_perms, format_json, show_thinking, writer, reader, temperature, max_tokens, top_p, variant, all_tools, mcp_clients.items);
 }
 
+/// Shallow-copy a message, preserving all fields including `tool_calls` and `tool_call_id`.
+/// The caller owns the returned message and must call `deinit` on it.
+fn copyMessageShallow(allocator: std.mem.Allocator, orig: *const llm.Message) !llm.Message {
+    var tool_calls: ?[]llm.ToolCall = null;
+    if (orig.tool_calls) |tcs| {
+        const copy = try allocator.alloc(llm.ToolCall, tcs.len);
+        for (tcs, 0..) |tc, j| {
+            copy[j] = .{
+                .id = try allocator.dupe(u8, tc.id),
+                .name = try allocator.dupe(u8, tc.name),
+                .arguments = try allocator.dupe(u8, tc.arguments),
+            };
+        }
+        tool_calls = copy;
+    }
+    return llm.Message{
+        .role = try allocator.dupe(u8, orig.role),
+        .content = try allocator.dupe(u8, orig.content),
+        .tool_calls = tool_calls,
+        .tool_call_id = if (orig.tool_call_id) |tcid| try allocator.dupe(u8, tcid) else null,
+    };
+}
+
 pub fn processTurnWithTools(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -417,7 +440,7 @@ pub fn processTurnWithTools(
             var new_msgs = std.ArrayList(llm.Message).initCapacity(allocator, total_keep + 1) catch unreachable;
             for (system_indices.items) |idx| {
                 const orig = &session.messages.items[idx];
-                try new_msgs.append(allocator, .{ .role = try allocator.dupe(u8, orig.role), .content = try allocator.dupe(u8, orig.content) });
+                try new_msgs.append(allocator, try copyMessageShallow(allocator, orig));
             }
             // Omission marker
             if (non_system_count > keep_exchanges * 2) {
@@ -432,7 +455,7 @@ pub fn processTurnWithTools(
                 i -= 1;
                 const orig = &session.messages.items[i];
                 if (!std.mem.eql(u8, orig.role, "system")) {
-                    try new_msgs.append(allocator, .{ .role = try allocator.dupe(u8, orig.role), .content = try allocator.dupe(u8, orig.content) });
+                    try new_msgs.append(allocator, try copyMessageShallow(allocator, orig));
                     kept += 1;
                 }
             }
@@ -527,8 +550,17 @@ pub fn processTurnWithTools(
                     continue;
                 };
 
-                // Execute tool
-                var tool_result = try executeTool(allocator, io, writer, reader, provider, model_id, tc, mcp_clients);
+                // Execute tool — catch errors so the LLM can recover
+                var tool_result = executeTool(allocator, io, writer, reader, provider, model_id, tc, mcp_clients) catch |err| {
+                    const err_msg = try std.fmt.allocPrint(allocator, "Error: {}", .{err});
+                    defer allocator.free(err_msg);
+                    try session.addToolResult(tc.id, err_msg, true);
+                    if (!format_json) {
+                        try writer.print("  \x1b[31m✗ {s}\x1b[0m\n", .{err_msg});
+                        try writer.flush();
+                    }
+                    continue;
+                };
                 defer tool_result.deinit(allocator);
                 const is_err = tool_result.exit_code != 0;
 
@@ -903,4 +935,72 @@ test "processTurn permission manager evaluate flow" {
     try testing.expectEqual(man2.evaluate("bash", "rm important.txt"), .allow);
 
     try testing.expectEqual(man2.evaluate("write", "/tmp/test"), .ask);
+}
+
+test "copyMessageShallow preserves all fields including tool_call_id" {
+    const testing = @import("std").testing;
+    const allocator = testing.allocator;
+
+    // Test 1: tool message with tool_call_id
+    {
+        const orig = llm.Message{
+            .role = "tool",
+            .content = "command output",
+            .tool_call_id = "call_123",
+            .tool_calls = null,
+        };
+        const copy = try copyMessageShallow(allocator, &orig);
+        defer copy.deinit(allocator);
+
+        try testing.expectEqualStrings(copy.role, "tool");
+        try testing.expectEqualStrings(copy.content, "command output");
+        try testing.expect(copy.tool_call_id != null);
+        try testing.expectEqualStrings(copy.tool_call_id.?, "call_123");
+        try testing.expect(copy.tool_calls == null);
+    }
+
+    // Test 2: assistant message with tool_calls
+    {
+        const tcs = [_]llm.ToolCall{
+            .{ .id = "call_a", .name = "bash", .arguments = "{\"command\":\"ls\"}" },
+            .{ .id = "call_b", .name = "read", .arguments = "{\"file_path\":\"/tmp/test\"}" },
+        };
+        const orig = llm.Message{
+            .role = "assistant",
+            .content = "Let me run those commands.",
+            .tool_call_id = null,
+            .tool_calls = &tcs,
+        };
+        const copy = try copyMessageShallow(allocator, &orig);
+        defer copy.deinit(allocator);
+
+        try testing.expectEqualStrings(copy.role, "assistant");
+        try testing.expectEqualStrings(copy.content, "Let me run those commands.");
+        try testing.expect(copy.tool_call_id == null);
+        try testing.expect(copy.tool_calls != null);
+        try testing.expectEqual(copy.tool_calls.?.len, 2);
+        try testing.expectEqualStrings(copy.tool_calls.?[0].id, "call_a");
+        try testing.expectEqualStrings(copy.tool_calls.?[0].name, "bash");
+        try testing.expectEqualStrings(copy.tool_calls.?[0].arguments, "{\"command\":\"ls\"}");
+        try testing.expectEqualStrings(copy.tool_calls.?[1].id, "call_b");
+        try testing.expectEqualStrings(copy.tool_calls.?[1].name, "read");
+        try testing.expectEqualStrings(copy.tool_calls.?[1].arguments, "{\"file_path\":\"/tmp/test\"}");
+    }
+
+    // Test 3: simple user message (no tool fields)
+    {
+        const orig = llm.Message{
+            .role = "user",
+            .content = "hello world",
+            .tool_call_id = null,
+            .tool_calls = null,
+        };
+        const copy = try copyMessageShallow(allocator, &orig);
+        defer copy.deinit(allocator);
+
+        try testing.expectEqualStrings(copy.role, "user");
+        try testing.expectEqualStrings(copy.content, "hello world");
+        try testing.expect(copy.tool_call_id == null);
+        try testing.expect(copy.tool_calls == null);
+    }
 }

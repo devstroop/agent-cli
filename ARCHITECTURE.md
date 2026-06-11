@@ -282,7 +282,7 @@ Sessions stored as JSON at `~/.config/agent/sessions/<id>.json`:
   "id": "1748123456789",
   "title": "Fix login bug",
   "agent": "build",
-  "model": { "providerID": "opencode", "id": "big-pickle" },
+  "model": { "providerID": "opencode", "id": "deepseek-v4-flash-free" },
   "created": 1748123456,
   "updated": 1748123500,
   "messages": [

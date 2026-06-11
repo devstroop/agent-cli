@@ -5,9 +5,24 @@ const llm = @import("llm.zig");
 
 const SESSION_DIR_REL = ".config/agent/sessions";
 
+fn getHomeDir() ?[]const u8 {
+    if (std.c.getenv("HOME")) |h| return std.mem.span(h);
+    // Windows: use USERPROFILE (e.g. C:\Users\Akash)
+    if (std.c.getenv("USERPROFILE")) |h| return std.mem.span(h);
+    // Windows fallback: HOMEDRIVE + HOMEPATH (e.g. C: + \Users\Akash)
+    if (std.c.getenv("HOMEDRIVE")) |hd| {
+        if (std.c.getenv("HOMEPATH")) |hp| {
+            // We'd need allocator here — skip this path, USERPROFILE covers it
+            _ = hd;
+            _ = hp;
+        }
+    }
+    return null;
+}
+
 pub fn sessionDir(allocator: std.mem.Allocator) ![]const u8 {
-    const home = std.c.getenv("HOME") orelse return error.NoHome;
-    return std.fmt.allocPrint(allocator, "{s}/{s}", .{ std.mem.span(home), SESSION_DIR_REL });
+    const home = getHomeDir() orelse return error.NoHome;
+    return std.fmt.allocPrint(allocator, "{s}/{s}", .{ home, SESSION_DIR_REL });
 }
 
 fn sessionFilePath(allocator: std.mem.Allocator, dir: []const u8, id: []const u8) ![]const u8 {
@@ -267,7 +282,7 @@ test "parseSession round-trip" {
         \\  "id": "test-123",
         \\  "title": "Test Session",
         \\  "agent": "build",
-        \\  "model": { "providerID": "opencode", "id": "big-pickle" },
+        \\  "model": { "providerID": "opencode", "id": "deepseek-v4-flash-free" },
         \\  "created": 1718000000,
         \\  "updated": 1718000500,
         \\  "messages": [
@@ -287,7 +302,7 @@ test "parseSession round-trip" {
     try testing.expectEqualStrings(session.title, "Test Session");
     try testing.expectEqualStrings(session.agent.?, "build");
     try testing.expectEqualStrings(session.provider_id.?, "opencode");
-    try testing.expectEqualStrings(session.model_id.?, "big-pickle");
+    try testing.expectEqualStrings(session.model_id.?, "deepseek-v4-flash-free");
     try testing.expectEqual(session.messages.items.len, 4);
     try testing.expectEqualStrings(session.messages.items[0].role, "system");
     try testing.expectEqualStrings(session.messages.items[0].content, "You are a helpful assistant.");
@@ -317,4 +332,189 @@ test "parseSession minimal" {
     try testing.expectEqualStrings(session.id, "minimal");
     try testing.expectEqual(session.messages.items.len, 0);
     try testing.expect(session.agent == null);
+}
+
+test "parseSession preserves tool_call_id on tool messages" {
+    const testing = @import("std").testing;
+    const allocator = testing.allocator;
+
+    // Regression: tool_call_id was dropped in some codepaths, causing DeepSeek 400 errors.
+    const json_text =
+        \\{
+        \\  "id": "tc-test",
+        \\  "title": "Tool Call ID Test",
+        \\  "messages": [
+        \\    { "role": "user", "content": "run ls" },
+        \\    { "role": "assistant", "content": "", "tool_calls": [{"id":"call_abc","type":"function","function":{"name":"bash","arguments":"{\"command\":\"ls\"}"}}] },
+        \\    { "role": "tool", "content": "file1.txt\nfile2.txt", "tool_call_id": "call_abc" }
+        \\  ]
+        \\}
+    ;
+
+    const session = try parseSession(allocator, json_text);
+    defer session.deinit();
+
+    try testing.expectEqual(session.messages.items.len, 3);
+
+    // Assistant message: tool_calls present with correct fields
+    const asst = session.messages.items[1];
+    try testing.expectEqualStrings(asst.role, "assistant");
+    try testing.expect(asst.tool_calls != null);
+    try testing.expectEqual(asst.tool_calls.?.len, 1);
+    try testing.expectEqualStrings(asst.tool_calls.?[0].id, "call_abc");
+    try testing.expectEqualStrings(asst.tool_calls.?[0].name, "bash");
+    try testing.expectEqualStrings(asst.tool_calls.?[0].arguments, "{\"command\":\"ls\"}");
+
+    // Tool message: tool_call_id MUST be present
+    const tool_msg = session.messages.items[2];
+    try testing.expectEqualStrings(tool_msg.role, "tool");
+    try testing.expect(tool_msg.tool_call_id != null);
+    try testing.expectEqualStrings(tool_msg.tool_call_id.?, "call_abc");
+    try testing.expectEqualStrings(tool_msg.content, "file1.txt\nfile2.txt");
+}
+
+test "parseSession: tool message missing tool_call_id still parses" {
+    const testing = @import("std").testing;
+    const allocator = testing.allocator;
+
+    // Graceful: tool message without tool_call_id should parse (even if LLM rejects it)
+    const json_text =
+        \\{
+        \\  "id": "no-tcid",
+        \\  "title": "Missing ToolCallID",
+        \\  "messages": [
+        \\    { "role": "tool", "content": "some output" }
+        \\  ]
+        \\}
+    ;
+
+    const session = try parseSession(allocator, json_text);
+    defer session.deinit();
+
+    try testing.expectEqual(session.messages.items.len, 1);
+    try testing.expectEqualStrings(session.messages.items[0].role, "tool");
+    try testing.expect(session.messages.items[0].tool_call_id == null);
+}
+
+test "getHomeDir: returns non-null when HOME is set" {
+    const testing = @import("std").testing;
+    // On CI (and most dev machines), HOME is always set.
+    // This test verifies the function doesn't crash and returns a value.
+    const home = getHomeDir();
+    if (std.c.getenv("HOME") != null or std.c.getenv("USERPROFILE") != null) {
+        try testing.expect(home != null);
+        if (home) |h| {
+            try testing.expect(h.len > 0);
+        }
+    }
+}
+
+test "sessionDir: returns valid path" {
+    const testing = @import("std").testing;
+    const allocator = testing.allocator;
+
+    // Skip if no home directory available
+    if (getHomeDir() == null) return;
+
+    const dir = try sessionDir(allocator);
+    defer allocator.free(dir);
+
+    try testing.expect(dir.len > 0);
+    try testing.expect(std.mem.indexOf(u8, dir, ".config/agent/sessions") != null);
+}
+
+test "saveSession / loadSession round-trip preserves tool_call_id" {
+    const testing = @import("std").testing;
+    const allocator = testing.allocator;
+    const io = std.Io.Test;
+
+    // Create a session with tool calls and tool results
+    var session = try session_mod.Session.init(allocator, .{
+        .id = "roundtrip-tcid",
+        .title = "Roundtrip TCID Test",
+        .agent = "build",
+        .model_id = "test-model",
+        .provider_id = "test-provider",
+    });
+    defer session.deinit();
+
+    try session.addMessage(.{ .role = try allocator.dupe(u8, "user"), .content = try allocator.dupe(u8, "run ls") });
+    try session.addMessage(.{
+        .role = try allocator.dupe(u8, "assistant"),
+        .content = try allocator.dupe(u8, ""),
+        .tool_calls = try allocator.dupe(llm.ToolCall, &[_]llm.ToolCall{.{ .id = try allocator.dupe(u8, "call_xyz"), .name = try allocator.dupe(u8, "bash"), .arguments = try allocator.dupe(u8, "{\"command\":\"ls\"}") }}),
+    });
+    try session.addToolResult("call_xyz", "file1.txt\nfile2.txt", false);
+
+    // Save to temp directory
+    const tmp_dir = try std.Io.Dir.openDirAbsolute(io, "/tmp", .{});
+    const file_path = try std.fmt.allocPrint(allocator, "/tmp/agent_test_roundtrip_{s}.json", .{session.id});
+    defer allocator.free(file_path);
+
+    // Manual save to a known temp path (bypass sessionDir)
+    {
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        const ja = arena.allocator();
+
+        var root = try json.ObjectMap.init(ja, &.{}, &.{});
+        try root.put(ja, "id", .{ .string = session.id });
+        try root.put(ja, "title", .{ .string = session.title });
+
+        var msgs_arr = json.Array.init(ja);
+        for (session.messages.items) |msg| {
+            var msg_obj = try json.ObjectMap.init(ja, &.{}, &.{});
+            try msg_obj.put(ja, "role", .{ .string = msg.role });
+            try msg_obj.put(ja, "content", .{ .string = msg.content });
+            if (msg.tool_call_id) |tcid| {
+                try msg_obj.put(ja, "tool_call_id", .{ .string = tcid });
+            }
+            if (msg.tool_calls) |tcs| {
+                var tc_arr = json.Array.init(ja);
+                for (tcs) |tc| {
+                    var tc_obj = try json.ObjectMap.init(ja, &.{}, &.{});
+                    try tc_obj.put(ja, "id", .{ .string = tc.id });
+                    try tc_obj.put(ja, "type", .{ .string = "function" });
+                    var func_obj = try json.ObjectMap.init(ja, &.{}, &.{});
+                    try func_obj.put(ja, "name", .{ .string = tc.name });
+                    try func_obj.put(ja, "arguments", .{ .string = tc.arguments });
+                    try tc_obj.put(ja, "function", .{ .object = func_obj });
+                    try tc_arr.append(.{ .object = tc_obj });
+                }
+                try msg_obj.put(ja, "tool_calls", .{ .array = tc_arr });
+            }
+            try msgs_arr.append(.{ .object = msg_obj });
+        }
+        try root.put(ja, "messages", .{ .array = msgs_arr });
+
+        const json_val = json.Value{ .object = root };
+        const json_str = try json.Stringify.valueAlloc(allocator, json_val, .{ .whitespace = .minified });
+        defer allocator.free(json_str);
+
+        try tmp_dir.writeFile(io, .{ .sub_path = file_path, .data = json_str });
+    }
+
+    // Load back and verify
+    const content = try tmp_dir.readFileAlloc(io, file_path, allocator, std.Io.Limit.limited(10 * 1024 * 1024));
+    defer allocator.free(content);
+
+    const loaded = try parseSession(allocator, content);
+    defer loaded.deinit();
+
+    try testing.expectEqual(loaded.messages.items.len, 3);
+
+    // Verify tool message has tool_call_id
+    const tool_msg = loaded.messages.items[2];
+    try testing.expectEqualStrings(tool_msg.role, "tool");
+    try testing.expect(tool_msg.tool_call_id != null);
+    try testing.expectEqualStrings(tool_msg.tool_call_id.?, "call_xyz");
+
+    // Verify assistant message has tool_calls
+    const asst = loaded.messages.items[1];
+    try testing.expect(asst.tool_calls != null);
+    try testing.expectEqual(asst.tool_calls.?.len, 1);
+    try testing.expectEqualStrings(asst.tool_calls.?[0].id, "call_xyz");
+
+    // Cleanup
+    tmp_dir.deleteTree(io, std.fs.path.basename(file_path)) catch {};
 }

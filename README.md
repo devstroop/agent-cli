@@ -27,7 +27,7 @@ agent run [options]
 agent run --message "Write a Python script to sort files by date"
 
 # Specify model
-agent run -m "opencode/big-pickle" --message "Say hello"
+agent run -m "opencode/deepseek-v4-flash-free" --message "Say hello"
 
 # Pipe input
 echo "Refactor this code" | agent run
