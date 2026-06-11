@@ -221,7 +221,7 @@ fn saveAndShare(cmd: *cli.Cmd, allocator: std.mem.Allocator, session: *session_m
     const share_flag = cmd.flag("share", bool);
     if (share_flag) {
         const share_url = share.shareSession(allocator, cmd.io, session.id, session.title) catch {
-            try cmd.writer.print("(sharing failed — opencode.ai may be unreachable)\n", .{});
+            try cmd.writer.print("(sharing failed -- opencode.ai may be unreachable)\n", .{});
             return;
         };
         defer allocator.free(share_url);
@@ -733,7 +733,7 @@ fn modelsExec(cmd: *cli.Cmd) !void {
             return;
         };
     } else (config_mod.find(cmd.io, cmd.allocator, null) catch null) orelse {
-        try cmd.writer.print("(default) opencode/deepseek-v4-flash-free — set OPENCODE_API_KEY\n", .{});
+        try cmd.writer.print("(default) opencode/deepseek-v4-flash-free -- set OPENCODE_API_KEY\n", .{});
         return;
     };
     defer config.deinit(cmd.allocator);
