@@ -185,7 +185,7 @@ Output: `zig-out/bin/agent`
 ### Test
 
 ```bash
-zig build test               # run all 47+ tests
+zig build test               # run all 60+ tests
 ```
 
 ### Code style
