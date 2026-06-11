@@ -51,6 +51,19 @@ agent run --message "Write a poem" --temperature 0.8 --max-tokens 200 --top-p 0.
 # Raw output (no markdown rendering)
 agent run --message "Write a Zig function" --raw
 
+# Show thinking/reasoning blocks (o1-style models)
+agent run --message "Prove sqrt(2) is irrational" --thinking
+
+# Reasoning effort variant (minimal/low/medium/high)
+agent run --message "Design a distributed lock" --variant high
+
+# Share session via opencode.ai link
+agent run --message "Explain monads" --share
+
+# Slash command: switch model or agent mid-session
+agent run --command /model deepseek/deepseek-v4-flash
+agent run --command "/agent ask"
+
 # Use a different agent
 agent run --message "Plan this task" --agent plan
 
@@ -99,6 +112,112 @@ Place `config.jsonc` at `~/.config/agent/config.jsonc` or `.agent/config.jsonc` 
 ```
 
 API keys are read from `{UPPERCASE_PROVIDER_ID}_API_KEY` environment variables (e.g. `DEEPSEEK_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`).
+
+## MCP Servers
+
+Add tool-augmenting MCP servers to `config.jsonc` under `mcpServers`. Three transports are supported:
+
+```jsonc
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed/files"]
+    },
+    "websearch": {
+      "transport": "sse",
+      "url": "http://localhost:8080/sse"
+    },
+    "api-gateway": {
+      "transport": "http",
+      "url": "https://my-mcp.example.com/rpc"
+    }
+  }
+}
+```
+
+- **stdio** (default when `command` is set): spawns the command as a child process
+- **sse** (`transport: "sse"`): connects via Server-Sent Events
+- **http** (`transport: "http"` or default when only `url` is set): standard JSON-RPC over HTTP
+
+MCP tools are discovered at startup and merged into the available tool set alongside built-in tools (bash, read, write, glob, grep, etc.). Use `agent models` to list configured providers and models.
+
+## Custom Agents (`.agent/agents/*.md`)
+
+Define custom agents as markdown files in `.agent/agents/` with YAML frontmatter:
+
+```markdown
+---
+name: reviewer
+description: Thorough code reviewer that catches bugs and style issues
+mode: primary
+---
+
+You are a senior code reviewer. For every file you examine:
+1. Check for correctness bugs
+2. Suggest style improvements
+3. Flag security concerns
+```
+
+Use with `--agent reviewer` or switch mid-session with `/agent reviewer`. The `mode` field can be `primary` (default) or `subagent` (invoked by the `task` tool).
+
+Config-level agents can also be defined inline in `config.jsonc`:
+
+```jsonc
+{
+  "agents": {
+    "linter": {
+      "description": "Runs linters and reports issues",
+      "systemPrompt": "You are a code linter. Run the project linter and report all issues concisely."
+    }
+  }
+}
+```
+
+## Progressive Skills
+
+Skills are markdown files stored in `~/.config/agent/skills/` or `.agent/skills/`. The agent lists available skills in its system context automatically. Use the `skill` tool to load a skill's full instructions into the conversation.
+
+```bash
+# Create a skill
+mkdir -p .agent/skills
+cat > .agent/skills/react-patterns.md << 'EOF'
+# React component patterns
+
+## Use Cases
+- When user asks about React component structure
+- When reviewing React code
+
+## Instructions
+Always prefer functional components with hooks over class components.
+Use composition over inheritance. Keep components small and focused.
+EOF
+```
+
+The skill is then available in-session: the agent can call `skill("react-patterns")` to load it. The first `# Heading` in the file is used as the description shown in the skill list.
+
+## Shell Expansion (`!command`)
+
+System prompts support `!command` expansion — the output of the command is inlined into the prompt at startup. Useful for injecting dynamic context:
+
+```
+!cat .agent/instructions.md
+!git log --oneline -5
+!ls -1 src/
+```
+
+Use `\!` to escape a literal `!`. Commands run via bash and stderr is discarded. This works in agent system prompts and anywhere a prompt is resolved through the context engine.
+
+## Slash Commands
+
+Available at runtime during `agent run` sessions via `--command`:
+
+| Command | Effect |
+|---------|--------|
+| `/model provider/model` | Switch the active model mid-session |
+| `/agent name` | Switch the active agent mid-session |
+
+Combined with `--fork`, you can start a conversation with one model and continue with another while preserving history.
 
 ## Output Formats
 
