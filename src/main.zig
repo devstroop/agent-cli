@@ -42,8 +42,13 @@ pub fn main(init: std.process.Init) !void {
         .name = "agent",
         .description = "A lightweight CLI client for OpenCode",
         .version = std.SemanticVersion{ .major = 0, .minor = 2, .patch = 0 },
-    }, struct { fn exec(_: *cli.Cmd) !void {} }.exec);
-    defer { root.deinit(); gpa.destroy(root); }
+    }, struct {
+        fn exec(_: *cli.Cmd) !void {}
+    }.exec);
+    defer {
+        root.deinit();
+        gpa.destroy(root);
+    }
 
     // ── Subcommands ─────────────────────────────────────────────────────────
 
@@ -110,7 +115,9 @@ fn addModelsCmd(root: *cli.Cmd, gpa: std.mem.Allocator, io: std.Io, stdout: *Io.
 }
 
 fn addConfigCmd(root: *cli.Cmd, gpa: std.mem.Allocator, io: std.Io, stdout: *Io.Writer, stdin: *Io.Reader) !void {
-    const config_cmd = try cli.Cmd.init(gpa, io, stdout, stdin, .{ .name = "config", .description = "Manage agent configuration" }, struct { fn exec(_: *cli.Cmd) !void {} }.exec);
+    const config_cmd = try cli.Cmd.init(gpa, io, stdout, stdin, .{ .name = "config", .description = "Manage agent configuration" }, struct {
+        fn exec(_: *cli.Cmd) !void {}
+    }.exec);
     const init_cmd = try cli.Cmd.init(gpa, io, stdout, stdin, .{ .name = "init", .description = "Interactive setup wizard — creates ~/.config/agent/config.jsonc" }, exec_mod.configInitExec);
     try config_cmd.addSub(init_cmd);
     try root.addSub(config_cmd);
