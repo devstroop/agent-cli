@@ -1,5 +1,5 @@
 const std = @import("std");
-const tool = @import("tool.zig");
+const tool = @import("agent-sdk").tool;
 const llm = @import("llm.zig");
 
 /// Build a JSON-RPC 2.0 request body string.

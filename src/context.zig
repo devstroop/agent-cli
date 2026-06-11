@@ -1,5 +1,5 @@
 const std = @import("std");
-const tool = @import("tool.zig");
+const tool = @import("agent-sdk").tool;
 
 /// Expand !command patterns in a string.
 /// Each `!command` (at start of line or after whitespace) is replaced

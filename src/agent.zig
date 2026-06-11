@@ -1,5 +1,5 @@
 const std = @import("std");
-const tool = @import("tool.zig");
+const tool = @import("agent-sdk").tool;
 
 /// Built-in agent definitions.
 pub const Mode = enum {

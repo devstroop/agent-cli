@@ -10,13 +10,14 @@ const Win32Console = struct {
     const STD_INPUT_HANDLE: u32 = @bitCast(@as(i32, -10));
 };
 
+const sdk = @import("agent-sdk");
 const cli = @import("cli.zig");
-const config_mod = @import("config.zig");
+const config_mod = sdk.config;
 const llm = @import("llm.zig");
 const session_mod = @import("session.zig");
 const agent_mod = @import("agent.zig");
-const permission_mod = @import("permission.zig");
-const tool = @import("tool.zig");
+const permission_mod = sdk.permission;
+const tool = sdk.tool;
 const processor = @import("processor.zig");
 const persistence = @import("persistence.zig");
 const context = @import("context.zig");

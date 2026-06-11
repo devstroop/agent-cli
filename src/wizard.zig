@@ -1,5 +1,5 @@
 const std = @import("std");
-const config_mod = @import("config.zig");
+const config_mod = @import("agent-sdk").config;
 
 /// Known provider presets for quick setup.
 const ProviderPreset = struct {

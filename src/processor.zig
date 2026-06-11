@@ -1,10 +1,11 @@
 const std = @import("std");
 const llm = @import("llm.zig");
 const session_mod = @import("session.zig");
-const tool = @import("tool.zig");
-const permission_mod = @import("permission.zig");
+const sdk = @import("agent-sdk");
+const tool = sdk.tool;
+const permission_mod = sdk.permission;
 const agent_mod = @import("agent.zig");
-const config_mod = @import("config.zig");
+const config_mod = sdk.config;
 const mcp = @import("mcp.zig");
 const markdown = @import("markdown.zig");
 
