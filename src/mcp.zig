@@ -1,6 +1,6 @@
 const std = @import("std");
 const tool = @import("agent-sdk").tool;
-const llm = @import("llm.zig");
+const llm = @import("agent-sdk").llm;
 
 /// Build a JSON-RPC 2.0 request body string.
 fn buildRequestBody(allocator: std.mem.Allocator, method: []const u8, params: ?[]const u8) ![]u8 {

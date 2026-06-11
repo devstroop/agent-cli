@@ -1,13 +1,19 @@
 const std = @import("std");
-const llm = @import("llm.zig");
 const session_mod = @import("session.zig");
 const sdk = @import("agent-sdk");
+const llm = sdk.llm;
 const tool = sdk.tool;
 const permission_mod = sdk.permission;
 const agent_mod = @import("agent.zig");
 const config_mod = sdk.config;
 const mcp = @import("mcp.zig");
 const markdown = @import("markdown.zig");
+
+/// Opaque callback adapter: Markdown renderer → llm.OnToken.
+fn mdOnTokenFeed(ptr: *anyopaque, text: []const u8) void {
+    const r: *markdown.MdRenderer = @ptrCast(@alignCast(ptr));
+    r.feed(text) catch {};
+}
 
 const ToolDispatch = struct {
     name: []const u8,
@@ -190,9 +196,10 @@ pub fn processAsk(
 
     // Set up markdown renderer (unless --raw or --format json).
     var md_renderer: ?markdown.MdRenderer = null;
-    if (!raw and !format_json) {
+    const on_token: ?llm.OnToken = if (!raw and !format_json) blk: {
         md_renderer = markdown.MdRenderer.init(allocator, writer);
-    }
+        break :blk llm.OnToken{ .context = @ptrCast(&md_renderer.?), .callback = mdOnTokenFeed };
+    } else null;
     defer if (md_renderer) |*r| r.deinit();
 
     const msgs = session.buildMessages(null);
@@ -208,9 +215,12 @@ pub fn processAsk(
         },
         writer,
         format_json,
-        if (md_renderer) |*r| r else null,
+        on_token,
     );
     defer response.deinit(allocator);
+
+    // Flush any buffered markdown output after the stream.
+    if (md_renderer) |*r| try r.flush();
 
     input_tokens += response.input_tokens orelse 0;
     output_tokens += response.output_tokens orelse 0;
@@ -422,9 +432,10 @@ pub fn processTurnWithTools(
 
     // Set up markdown renderer (unless --raw or --format json).
     var md_renderer: ?markdown.MdRenderer = null;
-    if (!raw and !format_json) {
+    const on_token: ?llm.OnToken = if (!raw and !format_json) blk: {
         md_renderer = markdown.MdRenderer.init(allocator, writer);
-    }
+        break :blk llm.OnToken{ .context = @ptrCast(&md_renderer.?), .callback = mdOnTokenFeed };
+    } else null;
     defer if (md_renderer) |*r| r.deinit();
 
     var perm_manager = permission_mod.Manager.init(allocator);
@@ -500,9 +511,12 @@ pub fn processTurnWithTools(
             },
             writer,
             format_json,
-            if (md_renderer) |*r| r else null,
+            on_token,
         );
         defer response.deinit(allocator);
+
+        // Flush any buffered markdown output after the stream.
+        if (md_renderer) |*r| try r.flush();
 
         input_tokens += response.input_tokens orelse 0;
         output_tokens += response.output_tokens orelse 0;
