@@ -313,7 +313,7 @@ pub fn planExec(cmd: *cli.Cmd) !void {
     var provider = llm.Provider.init(allocator, cmd.io, state.resolved.prov_cfg, state.resolved.api_key);
     const reader = if (state.skip_perms) null else cmd.reader;
     var sa_ctx = SubAgentCtx{ .writer = cmd.writer };
-    const result = processor.processTurnWithTools(allocator, cmd.io, &provider, &state.session, state.resolved.model_id, state.skip_perms, state.format_json, on_token, false, cmd.writer, reader, state.temperature, state.max_tokens, state.top_p, state.variant, tools, &.{}, sa_ctx.callback()) catch |err| {
+    const result = processor.processTurnWithTools(allocator, cmd.io, &provider, &state.session, state.resolved.model_id, state.skip_perms, state.format_json, on_token, false, cmd.writer, reader, state.temperature, state.max_tokens, state.top_p, state.variant, tools, &.{}, sa_ctx.callback(), 25) catch |err| {
         if (err == error.LlmError) {
             try cmd.writer.print("\n\x1b[31mError:\x1b[0m API request failed (rate limited or server error). Try again later.\n", .{});
             return;
@@ -395,7 +395,7 @@ pub fn reviewExec(cmd: *cli.Cmd) !void {
     var provider = llm.Provider.init(allocator, cmd.io, state.resolved.prov_cfg, state.resolved.api_key);
     const reader = if (state.skip_perms) null else cmd.reader;
     var sa_ctx = SubAgentCtx{ .writer = cmd.writer };
-    const result = processor.processTurnWithTools(allocator, cmd.io, &provider, &state.session, state.resolved.model_id, state.skip_perms, state.format_json, on_token, false, cmd.writer, reader, state.temperature, state.max_tokens, state.top_p, state.variant, tools, &.{}, sa_ctx.callback()) catch |err| {
+    const result = processor.processTurnWithTools(allocator, cmd.io, &provider, &state.session, state.resolved.model_id, state.skip_perms, state.format_json, on_token, false, cmd.writer, reader, state.temperature, state.max_tokens, state.top_p, state.variant, tools, &.{}, sa_ctx.callback(), 25) catch |err| {
         if (err == error.LlmError) {
             try cmd.writer.print("\n\x1b[31mError:\x1b[0m API request failed (rate limited or server error). Try again later.\n", .{});
             return;
@@ -434,7 +434,7 @@ pub fn editExec(cmd: *cli.Cmd) !void {
     var provider = llm.Provider.init(allocator, cmd.io, state.resolved.prov_cfg, state.resolved.api_key);
     const reader = if (state.skip_perms) null else cmd.reader;
     var sa_ctx = SubAgentCtx{ .writer = cmd.writer };
-    const result = processor.processTurnWithTools(allocator, cmd.io, &provider, &state.session, state.resolved.model_id, state.skip_perms, state.format_json, on_token, false, cmd.writer, reader, state.temperature, state.max_tokens, state.top_p, state.variant, tools, &.{}, sa_ctx.callback()) catch |err| {
+    const result = processor.processTurnWithTools(allocator, cmd.io, &provider, &state.session, state.resolved.model_id, state.skip_perms, state.format_json, on_token, false, cmd.writer, reader, state.temperature, state.max_tokens, state.top_p, state.variant, tools, &.{}, sa_ctx.callback(), 25) catch |err| {
         if (err == error.LlmError) {
             try cmd.writer.print("\n\x1b[31mError:\x1b[0m API request failed (rate limited or server error). Try again later.\n", .{});
             return;
@@ -482,7 +482,7 @@ pub fn runExec(cmd: *cli.Cmd) !void {
     var provider = llm.Provider.init(allocator, cmd.io, state.resolved.prov_cfg, state.resolved.api_key);
     const reader = if (state.skip_perms) null else cmd.reader;
     var sa_ctx = SubAgentCtx{ .writer = cmd.writer };
-    const result = processor.processTurnWithConfig(allocator, cmd.io, &provider, &state.session, state.resolved.model_id, state.skip_perms, state.format_json, on_token, show_thinking, cmd.writer, reader, state.temperature, state.max_tokens, state.top_p, state.variant, &state.config, sa_ctx.callback()) catch |err| {
+    const result = processor.processTurnWithConfig(allocator, cmd.io, &provider, &state.session, state.resolved.model_id, state.skip_perms, state.format_json, on_token, show_thinking, cmd.writer, reader, state.temperature, state.max_tokens, state.top_p, state.variant, &state.config, sa_ctx.callback(), 25) catch |err| {
         if (err == error.LlmError) {
             try cmd.writer.print("\n\x1b[31mError:\x1b[0m API request failed (rate limited or server error). Try again later.\n", .{});
             return;
