@@ -311,52 +311,63 @@ pub const Provider = struct {
             return error.LlmError;
         }
 
-        // Read stream
+        // Read stream — arena for all per-event throwaway allocations.
+        // json.parseFromSlice is the #1 alloc hot spot (called per SSE event).
+        // The arena absorbs all temporary memory and is freed at the end of the request.
+        var stream_arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer stream_arena.deinit();
+        const event_alloc = stream_arena.allocator();
+
         var reader_buf: [4096]u8 = undefined;
         const resp_reader = response.reader(&reader_buf);
         var chunk_buf: [4096]u8 = undefined;
 
-        // Accumulate full response
+        // Accumulate full response (must survive on self.allocator for ChatResponse)
         var content_buf = std.ArrayList(u8).initCapacity(self.allocator, 4096) catch unreachable;
         defer content_buf.deinit(self.allocator);
         var tool_calls = std.ArrayList(ToolCallAccum).initCapacity(self.allocator, 0) catch unreachable;
         defer {
-            for (tool_calls.items) |*tc| tc.deinit(self.allocator);
+            // id/name are arena-allocated — only free args (self.allocator)
+            for (tool_calls.items) |*tc| tc.args.deinit(self.allocator);
             tool_calls.deinit(self.allocator);
         }
         var finish_reason: ?[]const u8 = null;
         var input_tokens: ?u64 = null;
         var output_tokens: ?u64 = null;
 
-        var sse_line = std.ArrayList(u8).initCapacity(self.allocator, 4096) catch unreachable;
-        defer sse_line.deinit(self.allocator);
+        // Fixed stack buffer for SSE lines (max 4KB, typical lines < 256 bytes).
+        var sse_buf: [4096]u8 = undefined;
+        var sse_len: usize = 0;
 
         while (true) {
             const n = std.Io.Reader.readSliceShort(resp_reader, &chunk_buf) catch |err| return err;
             if (n == 0) break;
-            var i: usize = 0;
-            while (i < n) : (i += 1) {
-                const ch = chunk_buf[i];
+            for (chunk_buf[0..n]) |ch| {
                 if (ch == '\n') {
-                    if (std.mem.startsWith(u8, sse_line.items, "data: ")) {
-                        const data = sse_line.items[6..];
+                    const line = sse_buf[0..sse_len];
+                    if (std.mem.startsWith(u8, line, "data: ")) {
+                        const data = line[6..];
                         if (std.mem.eql(u8, data, "[DONE]")) break;
-                        try processSSEData(self.allocator, &content_buf, &tool_calls, &finish_reason, &input_tokens, &output_tokens, data, writer, format_json, md);
-                    } else if (sse_line.items.len > 0 and sse_line.items[0] == '{') {
-                        try processSSEData(self.allocator, &content_buf, &tool_calls, &finish_reason, &input_tokens, &output_tokens, sse_line.items, writer, format_json, md);
+                        try processSSEData(self.allocator, event_alloc, &content_buf, &tool_calls, &finish_reason, &input_tokens, &output_tokens, data, writer, format_json, md);
+                    } else if (sse_len > 0 and line[0] == '{') {
+                        try processSSEData(self.allocator, event_alloc, &content_buf, &tool_calls, &finish_reason, &input_tokens, &output_tokens, line, writer, format_json, md);
                     }
-                    sse_line.clearRetainingCapacity();
+                    sse_len = 0;
                 } else {
-                    try sse_line.append(self.allocator, ch);
+                    if (sse_len < sse_buf.len) {
+                        sse_buf[sse_len] = ch;
+                        sse_len += 1;
+                    }
                 }
             }
         }
         // Handle trailing line
-        if (sse_line.items.len > 0) {
-            if (std.mem.startsWith(u8, sse_line.items, "data: ")) {
-                const data = sse_line.items[6..];
+        if (sse_len > 0) {
+            const line = sse_buf[0..sse_len];
+            if (std.mem.startsWith(u8, line, "data: ")) {
+                const data = line[6..];
                 if (!std.mem.eql(u8, data, "[DONE]")) {
-                    try processSSEData(self.allocator, &content_buf, &tool_calls, &finish_reason, &input_tokens, &output_tokens, data, writer, format_json, md);
+                    try processSSEData(self.allocator, event_alloc, &content_buf, &tool_calls, &finish_reason, &input_tokens, &output_tokens, data, writer, format_json, md);
                 }
             }
         }
@@ -364,20 +375,23 @@ pub const Provider = struct {
         // Flush any remaining buffered markdown output.
         if (md) |r| try r.flush();
 
-        // Build final tool_calls array
+        // Build final tool_calls array — dupe arena-allocated id/name to main allocator.
         const tcs = try self.allocator.alloc(ToolCall, tool_calls.items.len);
         for (tool_calls.items, 0..) |*tc_acc, i| {
             tcs[i] = .{
                 .id = try self.allocator.dupe(u8, tc_acc.id),
                 .name = try self.allocator.dupe(u8, tc_acc.name),
-                .arguments = tc_acc.toOwnedSlice(self.allocator) catch unreachable,
+                .arguments = tc_acc.args.toOwnedSlice(self.allocator) catch unreachable,
             };
         }
+
+        // Dupe finish_reason from arena to main allocator.
+        const finish_owned: ?[]const u8 = if (finish_reason) |fr| try self.allocator.dupe(u8, fr) else null;
 
         return ChatResponse{
             .content = content_buf.toOwnedSlice(self.allocator) catch unreachable,
             .tool_calls = tcs,
-            .finish_reason = finish_reason,
+            .finish_reason = finish_owned,
             .input_tokens = input_tokens,
             .output_tokens = output_tokens,
         };
@@ -385,26 +399,24 @@ pub const Provider = struct {
 };
 
 const ToolCallAccum = struct {
+    /// Arena-allocated — freed when the stream arena is destroyed.
     id: []const u8,
+    /// Arena-allocated — freed when the stream arena is destroyed.
     name: []const u8,
+    /// Long-lived allocator (self.allocator) — freed in defer block after SSE loop.
     args: std.ArrayList(u8),
 
     fn init(allocator: std.mem.Allocator, id: []const u8, name: []const u8) !ToolCallAccum {
         const args = std.ArrayList(u8).initCapacity(allocator, 256) catch unreachable;
         return ToolCallAccum{ .id = id, .name = name, .args = args };
     }
-    fn deinit(self: *ToolCallAccum, allocator: std.mem.Allocator) void {
-        if (self.id.len > 0) allocator.free(self.id);
-        if (self.name.len > 0) allocator.free(self.name);
-        self.args.deinit(allocator);
-    }
-    fn toOwnedSlice(self: *ToolCallAccum, allocator: std.mem.Allocator) ![]const u8 {
-        return self.args.toOwnedSlice(allocator);
-    }
 };
 
 fn processSSEData(
+    /// Long-lived allocator for content_buf and tool_calls (survives the request).
     allocator: std.mem.Allocator,
+    /// Arena allocator for per-event throwaways (JSON parse, dupes). Reset after the request.
+    event_allocator: std.mem.Allocator,
     content_buf: *std.ArrayList(u8),
     tool_calls: *std.ArrayList(ToolCallAccum),
     finish_reason: *?[]const u8,
@@ -415,7 +427,7 @@ fn processSSEData(
     format_json: bool,
     md: ?*markdown.MdRenderer,
 ) !void {
-    const parsed = std.json.parseFromSlice(std.json.Value, allocator, data, .{}) catch return;
+    const parsed = std.json.parseFromSlice(std.json.Value, event_allocator, data, .{}) catch return;
     defer parsed.deinit();
     const root = parsed.value;
     if (root != .object) return;
@@ -444,8 +456,7 @@ fn processSSEData(
         if (c == .string and c.string.len > 0) {
             try content_buf.appendSlice(allocator, c.string);
             if (format_json) {
-                const line = try std.json.Stringify.valueAlloc(allocator, .{ .type = "text", .text = c.string }, .{ .whitespace = .minified });
-                defer allocator.free(line);
+                const line = try std.json.Stringify.valueAlloc(event_allocator, .{ .type = "text", .text = c.string }, .{ .whitespace = .minified });
                 try writer.print("{s}\n", .{line});
             } else {
                 if (md) |renderer| {
@@ -470,16 +481,14 @@ fn processSSEData(
                 }
                 if (tc_item.object.get("id")) |id_val| {
                     if (id_val == .string) {
-                        if (tool_calls.items[idx].id.len > 0) allocator.free(tool_calls.items[idx].id);
-                        tool_calls.items[idx].id = try allocator.dupe(u8, id_val.string);
+                        tool_calls.items[idx].id = try event_allocator.dupe(u8, id_val.string);
                     }
                 }
                 if (tc_item.object.get("function")) |func_val| {
                     if (func_val == .object) {
                         if (func_val.object.get("name")) |name_val| {
                             if (name_val == .string and name_val.string.len > 0) {
-                                if (tool_calls.items[idx].name.len > 0) allocator.free(tool_calls.items[idx].name);
-                                tool_calls.items[idx].name = try allocator.dupe(u8, name_val.string);
+                                tool_calls.items[idx].name = try event_allocator.dupe(u8, name_val.string);
                             }
                         }
                         if (func_val.object.get("arguments")) |args_val| {
@@ -493,11 +502,10 @@ fn processSSEData(
         }
     }
 
-    // Finish reason
+    // Finish reason (arena-allocated, duped to main allocator at end of stream)
     if (first.object.get("finish_reason")) |fr| {
         if (fr == .string and fr.string.len > 0) {
-            if (finish_reason.*) |old| allocator.free(old);
-            finish_reason.* = try allocator.dupe(u8, fr.string);
+            finish_reason.* = try event_allocator.dupe(u8, fr.string);
         }
     }
 }
