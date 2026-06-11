@@ -54,7 +54,7 @@ fn readBody(response: *std.http.Client.Response, max_size: usize, allocator: std
 
 /// Read a single line (up to \n) from an Io.Reader into an ArrayList.
 /// Returns the line without the trailing \n. Null on EOF.
-fn readLine(allocator: std.mem.Allocator, reader: *std.Io.Reader, buf: []u8) !?[]const u8 {
+fn readLine(allocator: std.mem.Allocator, reader: *std.Io.Reader, buf: []u8) !?[]u8 {
     var line = std.ArrayList(u8).initCapacity(allocator, 256) catch unreachable;
     errdefer line.deinit(allocator);
 
@@ -62,11 +62,13 @@ fn readLine(allocator: std.mem.Allocator, reader: *std.Io.Reader, buf: []u8) !?[
         const n = try reader.readSliceShort(buf);
         if (n == 0) {
             if (line.items.len == 0) return null;
-            return line.toOwnedSlice(allocator);
+            const owned = try line.toOwnedSlice(allocator);
+            return owned;
         }
         for (buf[0..n]) |c| {
             if (c == '\n') {
-                return line.toOwnedSlice(allocator);
+                const owned = try line.toOwnedSlice(allocator);
+                return owned;
             }
             try line.append(allocator, c);
         }
@@ -80,35 +82,31 @@ fn readSseEvent(allocator: std.mem.Allocator, reader: *std.Io.Reader, buf: []u8)
 
     while (true) {
         const line = try readLine(allocator, reader, buf) orelse return null;
-        defer if (line) |l| allocator.free(l);
-        if (line) |l| {
-            if (l.len == 0) {
-                // Empty line = end of event
-                if (data != null or event_type != null) {
-                    return .{ .event = event_type, .data = data };
-                }
-                // Skip empty keepalive
-                continue;
+        defer allocator.free(line);
+        if (line.len == 0) {
+            // Empty line = end of event
+            if (data != null or event_type != null) {
+                return .{ .event = event_type, .data = data };
             }
-            if (l[0] == ':') continue; // comment
-            if (std.mem.startsWith(u8, l, "event:")) {
-                if (event_type) |et| allocator.free(et);
-                event_type = try allocator.dupe(u8, std.mem.trim(u8, l["event:".len..], " \t"));
-                continue;
+            // Skip empty keepalive
+            continue;
+        }
+        if (line[0] == ':') continue; // comment
+        if (std.mem.startsWith(u8, line, "event:")) {
+            if (event_type) |et| allocator.free(et);
+            event_type = try allocator.dupe(u8, std.mem.trim(u8, line["event:".len..], " \t"));
+            continue;
+        }
+        if (std.mem.startsWith(u8, line, "data:")) {
+            if (data) |d| {
+                // Append to existing data with \n
+                const merged = try std.fmt.allocPrint(allocator, "{s}\n{s}", .{ d, std.mem.trim(u8, line["data:".len..], " \t") });
+                allocator.free(d);
+                data = merged;
+            } else {
+                data = try allocator.dupe(u8, std.mem.trim(u8, line["data:".len..], " \t"));
             }
-            if (std.mem.startsWith(u8, l, "data:")) {
-                if (data) |d| {
-                    // Append to existing data with \n
-                    const merged = try std.fmt.allocPrint(allocator, "{s}\n{s}", .{ d, std.mem.trim(u8, l["data:".len..], " \t") });
-                    allocator.free(d);
-                    data = merged;
-                } else {
-                    data = try allocator.dupe(u8, std.mem.trim(u8, l["data:".len..], " \t"));
-                }
-                continue;
-            }
-        } else {
-            return null; // EOF
+            continue;
         }
     }
 }
@@ -134,8 +132,8 @@ pub const Client = struct {
         args: []const []const u8,
         env: ?std.StringHashMap([]const u8),
         child: ?std.process.Child,
-        stdin_file: ?std.fs.File,
-        stdout_file: ?std.fs.File,
+        stdin_file: ?std.Io.File,
+        stdout_file: ?std.Io.File,
     };
 
     const SseState = struct {
@@ -204,7 +202,7 @@ pub const Client = struct {
             .stdio => |*state| {
                 // Kill child process if alive
                 if (state.child) |*child| {
-                    _ = child.kill() catch {};
+                    child.kill(self.io);
                 }
                 self.allocator.free(state.command);
                 for (state.args) |a| self.allocator.free(a);
@@ -275,17 +273,17 @@ pub const Client = struct {
             argv[i + 1] = arg;
         }
 
-        var child = std.process.Child.init(argv, self.allocator);
-        child.stdin_behavior = .Pipe;
-        child.stdout_behavior = .Pipe;
-        child.stderr_behavior = .Pipe;
+        const spawn_opts: std.process.SpawnOptions = .{
+            .argv = argv,
+            .stdin = .pipe,
+            .stdout = .pipe,
+            .stderr = .pipe,
+        };
 
-        // Apply env if provided
-        if (state.env) |env| {
-            child.env_map = env;
-        }
+        // Env override not yet supported with SpawnOptions.environ_map
+        _ = state.env;
 
-        try child.spawn();
+        const child = try std.process.spawn(self.io, spawn_opts);
         state.stdin_file = child.stdin.?;
         state.stdout_file = child.stdout.?;
         state.child = child;
@@ -298,21 +296,21 @@ pub const Client = struct {
         defer self.allocator.free(body);
 
         const state = &self.transport.stdio;
-        const stdin_writer = state.stdin_file.?.writer();
-        const stdout_reader = state.stdout_file.?.reader();
+        var stdin_wbuf: [4096]u8 = undefined;
+        var stdin_writer = state.stdin_file.?.writer(self.io, &stdin_wbuf);
+        var stdout_rbuf: [4096]u8 = undefined;
+        var stdout_reader = state.stdout_file.?.reader(self.io, &stdout_rbuf);
 
         // Write JSON-RPC request line
-        try stdin_writer.writeAll(body);
-        try stdin_writer.writeAll("\n");
+        try stdin_writer.interface.writeAll(body);
+        try stdin_writer.interface.writeAll("\n");
 
         // Read response line
         var read_buf: [4096]u8 = undefined;
-        const resp_line = try readLine(self.allocator, stdout_reader, &read_buf) orelse {
+        const line = try readLine(self.allocator, &stdout_reader.interface, &read_buf) orelse {
             return error.McpStdioEof;
         };
-        defer if (resp_line) |l| self.allocator.free(l);
-
-        const line = resp_line orelse return error.McpStdioEof;
+        defer self.allocator.free(line);
         if (line.len == 0) return error.McpStdioEmpty;
 
         const parsed = try std.json.parseFromSlice(std.json.Value, resp_arena, line, .{});
@@ -330,11 +328,13 @@ pub const Client = struct {
         errdefer client.deinit();
 
         const uri = try std.Uri.parse(state.base_url);
-        var headers: std.http.Client.Request.Headers = .{};
-        headers.accept = .{ .override = "text/event-stream" };
+        const headers: std.http.Client.Request.Headers = .{};
 
         var redirect_buf: [4096]u8 = undefined;
-        var request = try client.request(.GET, uri, .{ .headers = headers });
+        var request = try client.request(.GET, uri, .{
+            .headers = headers,
+            .extra_headers = &.{.{ .name = "accept", .value = "text/event-stream" }},
+        });
         defer request.deinit();
 
         try request.sendBodiless();
@@ -396,7 +396,7 @@ pub const Client = struct {
         defer self.allocator.free(body);
 
         // POST to endpoint
-        const client = state.http_client orelse return error.McpSseNotConnected;
+        var client = state.http_client orelse return error.McpSseNotConnected;
 
         const uri = try std.Uri.parse(endpoint);
         var headers: std.http.Client.Request.Headers = .{};
