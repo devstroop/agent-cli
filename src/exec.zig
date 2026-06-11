@@ -548,7 +548,20 @@ fn handleCommand(allocator: std.mem.Allocator, io: std.Io, writer: *Io.Writer, s
 
 // ── Session management commands ─────────────────────────────────────────────
 
-pub fn sessionExec(_: *cli.Cmd) !void {}
+pub fn sessionExec(cmd: *cli.Cmd) !void {
+    try cmd.writer.print(
+        \\Usage: agent session <subcommand>
+        \\
+        \\Subcommands:
+        \\  list    List all saved sessions
+        \\  show    Show a session by ID (requires --id)
+        \\
+        \\Examples:
+        \\  agent session list
+        \\  agent session show --id abc123
+        \\
+    , .{});
+}
 
 pub fn sessionListExec(cmd: *cli.Cmd) !void {
     const dir_path = persistence.sessionDir(cmd.allocator) catch |err| {
