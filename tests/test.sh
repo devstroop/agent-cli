@@ -163,6 +163,38 @@ else
     echo "Zig not found — skipping unit tests"
 fi
 
+# Run regression tests (no mock server needed)
+echo ""
+echo "--- Running regression tests ---"
+set +e
+bash "$SCRIPT_DIR/test_regression.sh" 2>&1
+REG_EXIT=$?
+set -e
+if [ $REG_EXIT -eq 0 ]; then
+    echo -e "${GREEN}Regression tests passed${NC}"
+    PASS=$((PASS + 1))
+else
+    echo -e "${RED}Regression tests failed${NC}"
+    FAIL=$((FAIL + 1))
+    FAILED_TESTS="$FAILED_TESTS regression"
+fi
+
+# Run encoding tests (no mock server needed)
+echo ""
+echo "--- Running encoding tests ---"
+set +e
+bash "$SCRIPT_DIR/test_encoding.sh" 2>&1
+ENC_EXIT=$?
+set -e
+if [ $ENC_EXIT -eq 0 ]; then
+    echo -e "${GREEN}Encoding tests passed${NC}"
+    PASS=$((PASS + 1))
+else
+    echo -e "${RED}Encoding tests failed${NC}"
+    FAIL=$((FAIL + 1))
+    FAILED_TESTS="$FAILED_TESTS encoding"
+fi
+
 if [ "$RUN_ALL" = false ]; then
     echo "Skipping integration tests (use --all or no args to include)"
     echo ""
@@ -179,6 +211,9 @@ run_test "basic_ask" "ask" "$SCRIPT_DIR/test_basic_ask.sh"
 
 # Test 2: Tool execution
 run_test "tool_execution" "tool_use" "$SCRIPT_DIR/test_tool_execution.sh"
+
+# Test 2b: Request body validation (runs after tool_use so mock has captured a tool message request)
+run_test "request_validation" "tool_use" "$SCRIPT_DIR/test_request_validation.sh"
 
 # Test 3: Error retry
 run_test "error_retry" "retry" "$SCRIPT_DIR/test_error_retry.sh"

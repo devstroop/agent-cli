@@ -812,7 +812,7 @@ pub fn main(init: std.process.Init) !void {
     {
         const ask_cmd = try cli.Cmd.init(gpa, io, stdout, stdin, .{
             .name = "ask",
-            .description = "Get a quick answer — no tools, just knowledge",
+            .description = "Get a quick answer -- no tools, just knowledge",
         }, askExec);
         try ask_cmd.addFlag(.{ .name = "message", .description = "The question to ask", .type = .String, .default_value = .{ .String = "" } });
         try ask_cmd.addFlag(.{ .name = "model", .description = "Model to use (provider/model)", .shortcut = "m", .type = .String, .default_value = .{ .String = "" } });
@@ -823,6 +823,8 @@ pub fn main(init: std.process.Init) !void {
         try ask_cmd.addFlag(.{ .name = "max-tokens", .description = "Maximum output tokens", .type = .Int, .default_value = .{ .Int = 0 } });
         try ask_cmd.addFlag(.{ .name = "temperature", .description = "Sampling temperature (0.0-2.0)", .type = .String, .default_value = .{ .String = "" } });
         try ask_cmd.addFlag(.{ .name = "top-p", .description = "Nucleus sampling parameter (0.0-1.0)", .type = .String, .default_value = .{ .String = "" } });
+        try ask_cmd.addFlag(.{ .name = "continue", .description = "Continue the last session", .shortcut = "c", .type = .Bool, .default_value = .{ .Bool = false } });
+        try ask_cmd.addFlag(.{ .name = "session", .description = "Session ID to resume", .shortcut = "s", .type = .String, .default_value = .{ .String = "" } });
         try root.addSub(ask_cmd);
     }
 
@@ -839,6 +841,8 @@ pub fn main(init: std.process.Init) !void {
         try plan_cmd.addFlag(.{ .name = "config", .description = "Path to agent config.jsonc", .type = .String, .default_value = .{ .String = "" } });
         try plan_cmd.addFlag(.{ .name = "max-tokens", .description = "Maximum output tokens", .type = .Int, .default_value = .{ .Int = 0 } });
         try plan_cmd.addFlag(.{ .name = "temperature", .description = "Sampling temperature (0.0-2.0)", .type = .String, .default_value = .{ .String = "" } });
+        try plan_cmd.addFlag(.{ .name = "continue", .description = "Continue the last session", .shortcut = "c", .type = .Bool, .default_value = .{ .Bool = false } });
+        try plan_cmd.addFlag(.{ .name = "session", .description = "Session ID to resume", .shortcut = "s", .type = .String, .default_value = .{ .String = "" } });
         try root.addSub(plan_cmd);
     }
 
@@ -861,7 +865,7 @@ pub fn main(init: std.process.Init) !void {
     {
         const edit_cmd = try cli.Cmd.init(gpa, io, stdout, stdin, .{
             .name = "edit",
-            .description = "Edit files — execute mode constrained to read/write/edit tools",
+            .description = "Edit files -- execute mode constrained to read/write/edit tools",
         }, editExec);
         try edit_cmd.addFlag(.{ .name = "message", .description = "The edit instruction", .type = .String, .default_value = .{ .String = "" } });
         try edit_cmd.addFlag(.{ .name = "model", .description = "Model to use (provider/model)", .shortcut = "m", .type = .String, .default_value = .{ .String = "" } });

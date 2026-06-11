@@ -999,3 +999,75 @@ test "ToolCallAccum.deinit frees owned fields" {
     try testing.expectEqualStrings(tc.id, "test_id");
     try testing.expectEqualStrings(tc.name, "test_name");
 }
+
+test "buildRequestBody: tool messages have tool_call_id" {
+    const testing = @import("std").testing;
+    const allocator = testing.allocator;
+
+    // Regression: DeepSeek 400 error "missing field `tool_call_id`"
+    // when tool messages were serialized without tool_call_id.
+    const provider = Provider.init(allocator, std.Io.Test, config_mod.ProviderConfig{
+        .name = "test",
+        .npm = "@test/provider",
+        .options = .{ .baseURL = "http://localhost:8080/v1/" },
+    }, null);
+
+    const tcs = [_]ToolCall{
+        .{ .id = "call_deepseek_1", .name = "bash", .arguments = "{\"command\":\"ls\"}" },
+    };
+
+    const msgs = [_]Message{
+        .{ .role = "user", .content = "run ls" },
+        .{ .role = "assistant", .content = "", .tool_calls = &tcs },
+        .{ .role = "tool", .content = "file1.txt\nfile2.txt", .tool_call_id = "call_deepseek_1" },
+    };
+
+    const req = ChatRequest{
+        .model = "test-model",
+        .messages = &msgs,
+        .tools = null,
+    };
+
+    var body: ?[]const u8 = null;
+    try provider.buildRequestBody(req, false, &body);
+    defer if (body) |b| allocator.free(b);
+
+    try testing.expect(body != null);
+    const body_str = body.?;
+
+    // Parse the JSON body
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, body_str, .{});
+    defer parsed.deinit();
+    const root = parsed.value;
+    try testing.expect(root == .object);
+
+    // Check messages array
+    const msgs_arr = root.object.get("messages").?;
+    try testing.expect(msgs_arr == .array);
+    try testing.expectEqual(msgs_arr.array.items.len, 3);
+
+    // Tool message (index 2) MUST have tool_call_id
+    const tool_msg = msgs_arr.array.items[2];
+    try testing.expect(tool_msg == .object);
+    const tool_call_id = tool_msg.object.get("tool_call_id");
+    try testing.expect(tool_call_id != null);
+    try testing.expectEqualStrings(tool_call_id.?.string, "call_deepseek_1");
+
+    // Assistant message (index 1) MUST have tool_calls with id, function.name, function.arguments
+    const asst_msg = msgs_arr.array.items[1];
+    try testing.expect(asst_msg == .object);
+    const tool_calls = asst_msg.object.get("tool_calls");
+    try testing.expect(tool_calls != null);
+    try testing.expect(tool_calls.? == .array);
+    try testing.expectEqual(tool_calls.?.array.items.len, 1);
+
+    const tc = tool_calls.?.array.items[0];
+    try testing.expect(tc == .object);
+    try testing.expectEqualStrings(tc.object.get("id").?.string, "call_deepseek_1");
+    try testing.expectEqualStrings(tc.object.get("type").?.string, "function");
+
+    const func = tc.object.get("function").?;
+    try testing.expect(func == .object);
+    try testing.expectEqualStrings(func.object.get("name").?.string, "bash");
+    try testing.expectEqualStrings(func.object.get("arguments").?.string, "{\"command\":\"ls\"}");
+}

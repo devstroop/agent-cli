@@ -604,3 +604,81 @@ test "parse: empty config" {
     try testing.expect(cfg.agents == null);
     try testing.expect(cfg.disabled_providers == null);
 }
+
+test "parse: malformed JSON returns error" {
+    const testing = @import("std").testing;
+    const allocator = testing.allocator;
+
+    // Not even valid JSON
+    const result = parse(allocator, "not json at all");
+    try testing.expectError(error.InvalidConfig, result);
+
+    // Trailing comma
+    const result2 = parse(allocator, "{\"provider\": {},}");
+    try testing.expectError(error.InvalidConfig, result2);
+}
+
+test "parse: empty string returns error" {
+    const testing = @import("std").testing;
+    const allocator = testing.allocator;
+
+    const result = parse(allocator, "");
+    try testing.expectError(error.InvalidConfig, result);
+}
+
+test "parse: missing baseURL defaults to empty string" {
+    const testing = @import("std").testing;
+    const allocator = testing.allocator;
+
+    // Provider with options but no baseURL should use empty string default
+    const json_text =
+        \\{
+        \\  "provider": {
+        \\    "no-url": {
+        \\      "name": "NoURL",
+        \\      "npm": "@test/nourl",
+        \\      "options": {}
+        \\    }
+        \\  }
+        \\}
+    ;
+    var cfg = try parse(allocator, json_text);
+    defer cfg.deinit(allocator);
+    try testing.expect(cfg.provider != null);
+    const entry = cfg.provider.?.get("no-url").?;
+    try testing.expectEqualStrings(entry.options.baseURL, "");
+}
+
+test "parse: config with comments stripped (JSONC)" {
+    const testing = @import("std").testing;
+    const allocator = testing.allocator;
+
+    // JSONC: comments are stripped before parsing
+    const json_text =
+        \\{
+        \\  // This is a comment
+        \\  "provider": {
+        \\    "test": {
+        \\      "name": "Test",
+        \\      "npm": "@test/provider",
+        \\      "options": {
+        \\        "baseURL": "http://localhost:8080/v1"
+        \\      }
+        \\    }
+        \\  }
+        \\  /* block comment */
+        \\}
+    ;
+    var cfg = try parse(allocator, json_text);
+    defer cfg.deinit(allocator);
+    try testing.expect(cfg.provider != null);
+    try testing.expect(cfg.provider.?.get("test") != null);
+}
+
+test "Config.empty returns empty config" {
+    const cfg = Config.empty();
+    try cfg.provider == null;
+    try cfg.agents == null;
+    try cfg.disabled_providers == null;
+    try cfg.mcp_servers == null;
+}

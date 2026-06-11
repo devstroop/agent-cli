@@ -21,6 +21,7 @@ PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 18899
 SCENARIO = os.environ.get("MOCK_SCENARIO", "ask")
 RETRY_COUNT = int(os.environ.get("MOCK_RETRY_COUNT", "0"))
 _call_count = 0
+_last_request = None  # Stores the last POST body for /last-request inspection
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -36,16 +37,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
             global _call_count
             _call_count = 0
             self._ok({"reset": True})
+        elif self.path == "/last-request":
+            global _last_request
+            self._ok({"request": json.loads(_last_request) if _last_request else None})
         else:
             self._ok({"status": "mock running"})
 
     def do_POST(self):
-        global _call_count
+        global _call_count, _last_request
         _call_count += 1
         path = urllib.parse.urlparse(self.path).path
 
         if path == "/v1/chat/completions":
             body = self._read_body()
+            _last_request = body  # Save for validation tests
             self._handle_chat_completion(body)
         else:
             self._json(404, {"error": "not found"})
