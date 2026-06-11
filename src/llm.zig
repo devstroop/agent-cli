@@ -2,7 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 const json = std.json;
-const config_mod = @import("config.zig");
+const config_mod = @import("agent-sdk").config;
 const flate = std.compress.flate;
 const markdown = @import("markdown.zig");
 

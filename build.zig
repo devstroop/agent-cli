@@ -4,11 +4,20 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const sdk_mod = b.createModule(.{
+        .root_source_file = b.path("../agent-sdk/src/lib.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
+        .imports = &.{
+            .{ .name = "agent-sdk", .module = sdk_mod },
+        },
     });
 
     const exe = b.addExecutable(.{
@@ -32,6 +41,9 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .link_libc = true,
+        .imports = &.{
+            .{ .name = "agent-sdk", .module = sdk_mod },
+        },
     });
 
     const test_exe = b.addTest(.{
