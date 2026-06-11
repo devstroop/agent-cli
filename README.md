@@ -27,7 +27,7 @@ agent run [options]
 agent run --message "Write a Python script to sort files by date"
 
 # Specify model
-agent run -m "deepseek/deepseek-v4-flash" --message "Say hello"
+agent run -m "deepseek/deepseek-v4-flash-free" --message "Say hello"
 
 # Pipe input
 echo "Refactor this code" | agent run
@@ -61,7 +61,7 @@ agent run --message "Design a distributed lock" --variant high
 agent run --message "Explain monads" --share
 
 # Slash command: switch model or agent mid-session
-agent run --command /model deepseek/deepseek-v4-flash
+agent run --command /model deepseek/deepseek-v4-flash-free
 agent run --command "/agent ask"
 
 # Use a different agent
@@ -113,6 +113,14 @@ Place `config.jsonc` at `~/.config/agent/config.jsonc` or `.agent/config.jsonc` 
 
 API keys are read from `{UPPERCASE_PROVIDER_ID}_API_KEY` environment variables (e.g. `DEEPSEEK_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`).
 
+### Quick setup
+
+```bash
+agent config init
+```
+
+Walks you through provider and model selection interactively — no manual JSON editing needed.
+
 ## MCP Servers
 
 Add tool-augmenting MCP servers to `config.jsonc` under `mcpServers`. Three transports are supported:
@@ -142,9 +150,9 @@ Add tool-augmenting MCP servers to `config.jsonc` under `mcpServers`. Three tran
 
 MCP tools are discovered at startup and merged into the available tool set alongside built-in tools (bash, read, write, glob, grep, etc.). Use `agent models` to list configured providers and models.
 
-## Custom Agents (`.agent/agents/*.md`)
+## Custom Agents (`.agent/custom/*.md`)
 
-Define custom agents as markdown files in `.agent/agents/` with YAML frontmatter:
+Define custom agents as markdown files in `.agent/custom/` with YAML frontmatter:
 
 ```markdown
 ---
@@ -226,7 +234,7 @@ Combined with `--fork`, you can start a conversation with one model and continue
 LLM output passes through a streaming markdown renderer. Code blocks get a dimmed gutter, headings are bold, inline formatting uses ANSI escapes:
 
 ```
-> run · deepseek/deepseek-v4-flash
+> run · deepseek/deepseek-v4-flash-free
 Here's a Zig snippet:
 ```zig
 │ const std = @import("std");
@@ -255,7 +263,7 @@ Sessions are saved to `~/.config/agent/sessions/<id>.json`. Use `--continue` / `
 
 ## Architecture
 
-17 source files, ~7,500 lines of Zig.
+18 source files, ~7,800 lines of Zig.
 
 | File | Purpose |
 |------|---------|
@@ -272,6 +280,7 @@ Sessions are saved to `~/.config/agent/sessions/<id>.json`. Use `--continue` / `
 | `mcp.zig` | MCP client — HTTP/stdio/SSE transports, JSON-RPC dispatch, tools/list + tools/call |
 | `cli.zig` | CLI framework — flag parsing, subcommands, help rendering |
 | `share.zig` | Share session to opencode.ai, generates shareable URL |
+| `wizard.zig` | Interactive config setup wizard — provider presets, model selection, API key detection |
 | `sse.zig` | SSE protocol parser for server event streams |
 | `markdown.zig` | Streaming markdown-to-ANSI renderer — headings, code blocks, inline formatting |
 
