@@ -263,26 +263,18 @@ Sessions are saved to `~/.config/agent/sessions/<id>.json`. Use `--continue` / `
 
 ## Architecture
 
-18 source files, ~7,800 lines of Zig.
+8 source files, ~2,600 lines of Zig. Core agent logic lives in [agent-sdk](https://github.com/devstroop/agent-sdk) (13 modules, ~5,800 lines).
 
-| File | Purpose |
-|------|---------|
-| `main.zig` | CLI entrypoint, flag parsing, model resolution, session lifecycle |
-| `config.zig` | JSONC parser with comment/trailing-comma stripping, provider config, API key resolution |
-| `llm.zig` | HTTP chat completions client with SSE streaming, tool call accumulation |
-| `processor.zig` | Multi-turn tool loop (max 25), tool dispatch, permission prompts, JSON output |
-| `tool.zig` | 14 tool executors: bash, read, write, glob, grep, webfetch, editFile, question, skill, todoWrite, plan, webSearch, snapshot, task |
-| `session.zig` | In-memory session state (messages, tool results, token counts) |
-| `agent.zig` | 8 built-in agent definitions and system prompts |
-| `persistence.zig` | JSON file read/write for sessions |
-| `context.zig` | Context renderer — date, OS, workspace, git, config, instructions |
-| `permission.zig` | Glob-based permission rule engine with interactive prompts |
-| `mcp.zig` | MCP client — HTTP/stdio/SSE transports, JSON-RPC dispatch, tools/list + tools/call |
-| `cli.zig` | CLI framework — flag parsing, subcommands, help rendering |
-| `share.zig` | Share session to opencode.ai, generates shareable URL |
-| `wizard.zig` | Interactive config setup wizard — provider presets, model selection, API key detection |
-| `sse.zig` | SSE protocol parser for server event streams |
-| `markdown.zig` | Streaming markdown-to-ANSI renderer — headings, code blocks, inline formatting |
+| File | Lines | Purpose |
+|------|-------|---------|
+| `main.zig` | 193 | CLI entrypoint, subcommand registration, flag definitions |
+| `exec.zig` | 809 | Mode exec functions (run/ask/plan/review/edit), model resolution, session lifecycle |
+| `markdown.zig` | 477 | Streaming markdown-to-ANSI renderer — headings, code blocks, inline formatting |
+| `cli.zig` | 446 | CLI framework — flag parsing, subcommands, help rendering |
+| `wizard.zig` | 273 | Interactive config setup wizard — provider presets, model selection, API key detection |
+| `persistence.zig` | 208 | Session file I/O (save/load to disk), delegates JSON to SDK |
+| `context.zig` | 136 | Context renderer — date, OS, workspace, git, config, instructions |
+| `share.zig` | 57 | Share session to opencode.ai, generates shareable URL |
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the full system design, data flow diagrams, and module dependency map.
 

@@ -1,28 +1,28 @@
 # Architecture
 
-agent-cli is a self-contained Zig CLI for LLM-based agent workflows. It runs a multi-turn tool loop against an OpenAI-compatible `/chat/completions` endpoint. 16 source files, ~7,000 lines of Zig.
+agent-cli is a thin Zig CLI for LLM-based agent workflows. It wires CLI flags to the [agent-sdk](https://github.com/devstroop/agent-sdk) library, which houses all agent logic. 8 source files, ~2,600 lines of Zig (SDK: 13 modules, ~5,800 lines).
 
 ## System Overview
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                     agent run                                │
-│  main.zig: runExec                                          │
+│  main.zig → exec.zig: runExec                               │
 │                                                             │
-│  1. Load config                          config.zig         │
-│  2. Resolve model+provider               main.zig           │
-│  3. Resolve agent                        agent.zig          │
-│  4. Load/create session                  persistence.zig    │
-│  5. Build messages                        ─┐               │
-│     a. Context system message           context.zig         │
-│     b. Available skills listing         tool.zig            │
-│     c. Agent system prompt (+model suffix) agent.zig       │
-│     d. .agent.md files (if present)     main.zig            │
-│     e. User message                     (from flags/stdin)  │
-│     f. File attachments                 (from --file)       │
-│  6. Print banner                                            │
-│  7. processTurnWithTools ← MAIN LOOP    processor.zig       │
-│  8. Save session + share                persistence.zig     │
+│  1. Load config                  → sdk.config               │
+│  2. Resolve model+provider       → exec.zig                 │
+│  3. Resolve agent                → sdk.agent                │
+│  4. Load/create session          → persistence.zig          │
+│  5. Build messages                ─┐                       │
+│     a. Context system message   context.zig                 │
+│     b. Available skills listing → sdk.tool                  │
+│     c. Agent system prompt      → sdk.agent                 │
+│     d. .agent.md files          exec.zig                    │
+│     e. User message             (from flags/stdin)          │
+│     f. File attachments         (from --file)               │
+│  6. Print banner                  exec.zig                  │
+│  7. processTurnWithTools ← MAIN LOOP → sdk.processor        │
+│  8. Save session + share        persistence.zig / share.zig │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -100,7 +100,7 @@ The default mode. All 14 built-in tools + any configured MCP tools. Multi-turn l
 All modes share the same engine:
 
 ```
-main.zig                    processor.zig
+exec.zig                    sdk.processor
 ────────                    ─────────────
 askExec()  ──────────────►  processAsk()           tools=null, single turn
 planExec() ──────────────►  processTurnWithTools() tools=read-only (read,glob,grep,webfetch)
@@ -109,7 +109,7 @@ editExec() ──────────────►  processTurnWithTools()
 runExec()  ──────────────►  processTurnWithTools() tools=all, multi-turn, MCP
 ```
 
-`buildToolDefsFiltered()` in `processor.zig` constructs the constrained tool set for Edit mode by name whitelist. Plan and Review use `processTurnWithTools()` with filtered read-only tool sets — tools are available for codebase inspection before the LLM responds.
+`buildToolDefsFiltered()` in `sdk.processor` constructs the constrained tool set for Edit mode by name whitelist. Plan and Review use `processTurnWithTools()` with filtered read-only tool sets — tools are available for codebase inspection before the LLM responds.
 
 ### What This Model Rejects
 
@@ -119,7 +119,9 @@ runExec()  ──────────────►  processTurnWithTools()
 - ❌ "Edit is just Execute with substring-filtered tools" — Edit is a security boundary
 - ❌ "Non-streaming modes are cheaper" — streaming cost is in output tokens, not protocol
 
-## Core Loop (`processor.zig`)
+## Core Loop (`sdk.processor`)
+
+The agent loop lives in the SDK. It is invoked by CLI exec functions with appropriate tool sets and parameters.
 
 ```
 ┌─── Multi-Turn Loop (max 25) ──────────────────────────────────┐
@@ -128,13 +130,13 @@ runExec()  ──────────────►  processTurnWithTools()
 │     a. Built-in: bash, read, write, glob, grep, webfetch,     │
 │        editFile, question, skill, todoWrite, plan,            │
 │        webSearch, snapshot, task                              │
-│     b. MCP tools (mcp.zig): if configured, fetch from         │
+│     b. MCP tools (sdk.mcp): if configured, fetch from         │
 │        MCP servers via tools/list → tools/call                │
-│     c. Progressive skills (processor.zig): compact → full     │
+│     c. Progressive skills (sdk.processor): compact → full     │
 │        body loaded on first use                               │
 │     d. Mode filter: Edit/Plan/Review constrain tool set       │
 │        via buildToolDefsFiltered()                            │
-│  2. llm.zig: Provider.completeStream(...)                      │
+│  2. sdk.llm: Provider.completeStream(...)                      │
 │     ┌─ HTTP POST /chat/completions ────────────────────────┐   │
 │     │  a. Build JSON body (model, messages, stream:true,   │   │
 │     │     tools, temperature, max_tokens, top_p,           │   │
@@ -151,8 +153,8 @@ runExec()  ──────────────►  processTurnWithTools()
 │  3. Store assistant message in session                         │
 │  4. If tool_calls returned:                                    │
 │     a. Permission check (stdin y/n/always)                     │
-│     b. executeTool by name → tool.zig dispatch                 │
-│     c. MCP tool dispatch → mcp.zig if prefixed                 │
+│     b. executeTool by name → sdk.tool dispatch                 │
+│     c. MCP tool dispatch → sdk.mcp if prefixed                 │
 │     d. Store tool result in session                            │
 │     e. Continue loop                                           │
 │  5. If finish_reason: check stop hook, emit [reason], return   │
@@ -162,25 +164,40 @@ runExec()  ──────────────►  processTurnWithTools()
 
 ## Module Map
 
+### agent-cli (this package)
+
 | Module | Lines | Responsibility | Depends On |
 |--------|-------|----------------|------------|
-| `main.zig` | 916 | CLI entrypoint, flag wiring, model resolution, session lifecycle, .agent.md loading, command dispatch | config, llm, session, agent, processor, persistence, context, cli |
-| `config.zig` | 606 | JSONC config file parser, provider config, API key env lookup, agent definitions, MCP server config (http/stdio/sse), permission rules | (std.json) |
-| `llm.zig` | 828 | HTTP chat completions client, SSE streaming, JSON response parser, model resolution | config |
-| `processor.zig` | 906 | Multi-turn tool loop (max 25), permission prompt, tool dispatch, compaction, progressive skills, MCP tool integration, bash ! expansion, stop hook | llm, session, tool, permission, agent, mcp |
-| `tool.zig` | 217 | 14 tool executors (bash, read, write, glob, grep, webfetch, editFile, question, skill, todoWrite, plan, webSearch, snapshot, task) | (std.process, std.Io) |
+| `main.zig` | 193 | CLI entrypoint, subcommand registration, flag definitions | cli, exec |
+| `exec.zig` | 809 | Mode exec functions (run/ask/plan/review/edit), model resolution, session lifecycle | sdk.*, persistence, context, share, wizard, markdown |
+| `markdown.zig` | 477 | Streaming markdown-to-ANSI renderer | (none) |
+| `cli.zig` | 446 | CLI framework (flag parsing, subcommands, help rendering) | (std.process.Init) |
+| `wizard.zig` | 273 | Interactive config setup wizard — provider presets, model selection, API key detection | sdk.config |
+| `persistence.zig` | 208 | Session file I/O (save/load/latest), delegates JSON serialization to SDK | sdk.session, sdk.session_json |
+| `context.zig` | 136 | 7-source system context renderer (Date, OS, Shell, Workspace, Git Info, Env Summary, Tool Help) | sdk.tool |
+| `share.zig` | 57 | Share session to opencode.ai, generates shareable URL | sdk.session |
+
+### agent-sdk (core library)
+
+| Module | Lines | Responsibility | Depends On |
+|--------|-------|----------------|------------|
+| `llm.zig` | 1,099 | HTTP chat completions client, SSE streaming, JSON response parser, tool call accumulation, model resolution | config, client |
+| `processor.zig` | 1,012 | Multi-turn tool loop (max 25), permission prompt, tool dispatch, compaction, progressive skills, bash ! expansion, stop hook | llm, session, tool, permission, agent, mcp |
+| `config.zig` | 684 | JSONC config parser with comment/trailing-comma stripping, provider config, API key env lookup, agent definitions, MCP server config | (std.json) |
+| `types.zig` | 573 | Shared types: Message, ToolCall, ToolDef, ChatRequest, ChatResponse, ProviderConfig | (none) |
+| `client.zig` | 533 | Low-level HTTP client (request construction, headers, response handling) | (std.http) |
+| `mcp.zig` | 505 | MCP client — HTTP/stdio/SSE transports, JSON-RPC dispatch, tools/list + tools/call | tool, llm |
+| `session_json.zig` | 332 | Session JSON serialization/deserialization (parse/serialize) | session, llm |
+| `agent.zig` | 287 | 8 built-in agent definitions and system prompts (build, plan, ask, edit, review, summary, title, compaction) | tool |
+| `tool.zig` | 262 | 14 tool executors (bash, read, write, glob, grep, webfetch, edit, question, skill, todowrite, plan, websearch, snapshot, task) | (std.process, std.Io) |
+| `sse.zig` | 181 | Server-Sent Events protocol parser | types |
 | `session.zig` | 167 | In-memory session state (messages, tool results, token counts), loaded skills cache | llm |
-| `agent.zig` | 287 | 8 built-in agent definitions and system prompts (build, plan, ask, edit, review, summary, title, compaction) | (none) |
-| `persistence.zig` | 320 | JSON file save/load for sessions, latest-session pointer | session, llm |
-| `context.zig` | 136 | 7-source system context renderer (Date, OS, Shell, Workspace, Git Info, Env Summary, Tool Help) + bash ! expansion | tool |
 | `permission.zig` | 126 | Glob-based permission rule engine (allow/ask/deny tiers) | (none) |
-| `cli.zig` | 434 | CLI framework (flag parsing, subcommands, help rendering) | (std.process.Init) |
-| `mcp.zig` | 503 | MCP client — HTTP/stdio/SSE transports, JSON-RPC dispatch, tools/list + tools/call | (std.http, std.process) |
-| `sse.zig` | 181 | Server-protocol SSE parser (not used by `agent run`) | types |
+| `lib.zig` | 18 | Module re-exports — single import point | (all modules) |
 
-## Key Phase 2 Features
+## Key Features
 
-### MCP Multi-Transport (`mcp.zig`)
+### MCP Multi-Transport (`sdk.mcp`)
 External tools can be loaded from MCP-compatible servers via three transports:
 - **HTTP**: POST JSON-RPC to a URL (`.url` in config, default transport)
 - **Stdio**: Spawn command as child process, communicate via stdin/stdout (`.command` + `.args` in config)
@@ -189,7 +206,7 @@ External tools can be loaded from MCP-compatible servers via three transports:
 - `tools/call` dispatches prefixed tool calls (e.g., `mcp_hexmath__hex_add`)
 - Supports multiple MCP servers simultaneously, mixed transports
 
-### Progressive Skills (`processor.zig`)
+### Progressive Skills (`sdk.processor`)
 Skills are loaded lazily to keep system prompts compact:
 - Initial load: skill name + description only (metadata listing at startup)
 - On first use: full skill body loaded and injected as a **system message** (persists through compaction)
@@ -197,17 +214,17 @@ Skills are loaded lazily to keep system prompts compact:
 - Dedup: `session.loaded_skills` cache prevents re-loading within a session
 - Source: `.agent/skills/` or `~/.config/agent/skills/`
 
-### .agent.md Loading (`main.zig`)
+### .agent.md Loading (`exec.zig`)
 If `.agent.md` exists in the workspace root, its contents are injected as a system message before the user message. This provides project-level context without modifying the agent definition.
 
-### Bash `!` Expansion (`processor.zig`)
+### Bash `!` Expansion (`sdk.processor`)
 Tool results can contain `!command` lines that get expanded by the processor before being sent back to the LLM, reducing tool-call roundtrips for common patterns.
 
-### Task (Sub-Agent Spawn) (`tool.zig`)
+### Task (Sub-Agent Spawn) (`sdk.tool`)
 
 The `task` tool spawns a sub-agent for reasoning-only delegation. It is **not** a full multi-agent system:
 
-- **Isolated context**: The sub-agent sees exactly 2 messages — its own system prompt (from `agent.zig`) + the user's task description. Zero access to parent session history, file contents, or tool results.
+- **Isolated context**: The sub-agent sees exactly 2 messages — its own system prompt (from `sdk.agent`) + the user's task description. Zero access to parent session history, file contents, or tool results.
 - **No tools**: The sub-agent call uses `provider.complete()` (single-turn, `tools: null`). It cannot read files, run bash, search the web, or spawn further sub-agents.
 - **No recursion**: The sub-agent has no access to the `task` tool. Recursive agent spawning is structurally impossible.
 - **No permissions**: No permission checks — there's nothing to permit since the sub-agent has no capabilities.
@@ -219,7 +236,7 @@ This is the simplest possible delegation primitive: a pure reasoning sandbox. Us
 ## Data Flow — Request Through Provider
 
 ```
-main.zig                         config.zig                    llm.zig
+exec.zig                          sdk.config                    sdk.llm
 ───────                          ──────────                    ───────
 --model "open-code/mistral" ──>  resolveModelProvider()
                                     │
@@ -257,12 +274,12 @@ FRESH SESSION                              LOADED SESSION
 session.init()                             persistence.loadSession(id)
   │                                          │
   ├── context.render() → system msg          └── messages restored from JSON
-  ├── agent system prompt → system msg
+  ├── sdk.agent system prompt → system msg
   ├── .agent.md (if present) → system msg
   └── user message
        │
        ▼
-processTurn() ──► LLM turn loop
+sdk.processor.processTurn() ──► LLM turn loop
        │
        ▼
 persistence.saveSession()
@@ -300,15 +317,15 @@ All flags are wired and functional:
 ```
 agent run
   ├── --message        → user message content
-  ├── --model          → provider/model resolution
-  ├── --agent          → agent.zig::getBuiltin()
-  ├── --dir            → config.find() + context.render()
+  ├── --model          → provider/model resolution (exec.zig → sdk.config)
+  ├── --agent          → sdk.agent.getBuiltin()
+  ├── --dir            → config resolution + context.render()
   ├── --format         → json vs default output mode
   ├── --file (-f)      → read file → inject as user message
   ├── --continue (-c)  → persistence.loadLatestSession()
   ├── --session (-s)   → persistence.loadSession()
   ├── --fork           → clone session.id
-  ├── --config         → config.loadFile() direct
+  ├── --config         → sdk.config.loadFile() direct
   ├── --max-tokens     → ChatRequest.max_tokens
   ├── --temperature    → ChatRequest.temperature
   ├── --top-p          → ChatRequest.top_p
@@ -322,22 +339,22 @@ agent run
 
 ## Tools
 
-14 built-in tools + MCP tools dispatched by name in `processor.zig` dispatch table:
+14 built-in tools + MCP tools dispatched by name in `sdk.processor` dispatch table:
 
 | Tool | Implementation | Mechanism |
 |------|---------------|-----------|
-| `bash` | `tool.bash()` | `std.process.spawn("bash", "-c", command)` |
-| `read` | `tool.readFile()` | `Dir.readFileAlloc()` |
-| `write` | `tool.writeFile()` | `Dir.writeFile()` |
-| `glob` | `tool.globSearch()` | shell out to `find -name` via bash |
-| `grep` | `tool.grepSearch()` | shell out to `rg --json` via bash |
-| `webfetch` | `tool.webFetch()` | shell out to `curl -sL` via bash |
-| `editFile` | `tool.editFile()` | search-and-replace via exact string match |
-| `question` | `tool.question()` | `io.writer.print` + `io.reader.readLine` |
-| `skill` | `tool.skill()` | progressive: load skill from `.agent/skills/` or `~/.config/agent/skills/` |
-| `todoWrite` | `tool.todoWrite()` | write TODO.md in workspace |
-| `plan` | `tool.plan()` | write PLAN.md in workspace |
-| `webSearch` | `tool.webSearch()` | shell out to `curl` DuckDuckGo |
-| `snapshot` | `tool.snapshot()` | `git diff` capture |
-| `task` | `tool.task()` | sub-agent spawn via LLM |
-| `mcp_*` | `mcp.zig` | MCP tools: dispatched via `tools/call` to configured MCP servers |
+| `bash` | `sdk.tool` | `std.process.spawn("bash", "-c", command)` |
+| `read` | `sdk.tool` | `Dir.readFileAlloc()` |
+| `write` | `sdk.tool` | `Dir.writeFile()` |
+| `glob` | `sdk.tool` | shell out to `find -name` via bash |
+| `grep` | `sdk.tool` | shell out to `rg --json` via bash |
+| `webfetch` | `sdk.tool` | shell out to `curl -sL` via bash |
+| `editFile` | `sdk.tool` | search-and-replace via exact string match |
+| `question` | `sdk.tool` | `io.writer.print` + `io.reader.readLine` |
+| `skill` | `sdk.tool` | progressive: load skill from `.agent/skills/` or `~/.config/agent/skills/` |
+| `todoWrite` | `sdk.tool` | write TODO.md in workspace |
+| `plan` | `sdk.tool` | write PLAN.md in workspace |
+| `webSearch` | `sdk.tool` | shell out to `curl` DuckDuckGo |
+| `snapshot` | `sdk.tool` | `git diff` capture |
+| `task` | `sdk.tool` | sub-agent spawn via LLM |
+| `mcp_*` | `sdk.mcp` | MCP tools: dispatched via `tools/call` to configured MCP servers |
