@@ -10,6 +10,7 @@ const agent_mod = sdk.agent;
 const permission_mod = sdk.permission;
 const tool = sdk.tool;
 const processor = sdk.processor;
+const a2a_mod = sdk.a2a;
 const persistence = @import("persistence.zig");
 const context = @import("context.zig");
 const share = @import("share.zig");
@@ -311,7 +312,8 @@ pub fn planExec(cmd: *cli.Cmd) !void {
 
     var provider = llm.Provider.init(allocator, cmd.io, state.resolved.prov_cfg, state.resolved.api_key);
     const reader = if (state.skip_perms) null else cmd.reader;
-    const result = processor.processTurnWithTools(allocator, cmd.io, &provider, &state.session, state.resolved.model_id, state.skip_perms, state.format_json, on_token, false, cmd.writer, reader, state.temperature, state.max_tokens, state.top_p, state.variant, tools, &.{}) catch |err| {
+    var sa_ctx = SubAgentCtx{ .writer = cmd.writer };
+    const result = processor.processTurnWithTools(allocator, cmd.io, &provider, &state.session, state.resolved.model_id, state.skip_perms, state.format_json, on_token, false, cmd.writer, reader, state.temperature, state.max_tokens, state.top_p, state.variant, tools, &.{}, sa_ctx.callback()) catch |err| {
         if (err == error.LlmError) {
             try cmd.writer.print("\n\x1b[31mError:\x1b[0m API request failed (rate limited or server error). Try again later.\n", .{});
             return;
@@ -392,7 +394,8 @@ pub fn reviewExec(cmd: *cli.Cmd) !void {
 
     var provider = llm.Provider.init(allocator, cmd.io, state.resolved.prov_cfg, state.resolved.api_key);
     const reader = if (state.skip_perms) null else cmd.reader;
-    const result = processor.processTurnWithTools(allocator, cmd.io, &provider, &state.session, state.resolved.model_id, state.skip_perms, state.format_json, on_token, false, cmd.writer, reader, state.temperature, state.max_tokens, state.top_p, state.variant, tools, &.{}) catch |err| {
+    var sa_ctx = SubAgentCtx{ .writer = cmd.writer };
+    const result = processor.processTurnWithTools(allocator, cmd.io, &provider, &state.session, state.resolved.model_id, state.skip_perms, state.format_json, on_token, false, cmd.writer, reader, state.temperature, state.max_tokens, state.top_p, state.variant, tools, &.{}, sa_ctx.callback()) catch |err| {
         if (err == error.LlmError) {
             try cmd.writer.print("\n\x1b[31mError:\x1b[0m API request failed (rate limited or server error). Try again later.\n", .{});
             return;
@@ -430,7 +433,8 @@ pub fn editExec(cmd: *cli.Cmd) !void {
 
     var provider = llm.Provider.init(allocator, cmd.io, state.resolved.prov_cfg, state.resolved.api_key);
     const reader = if (state.skip_perms) null else cmd.reader;
-    const result = processor.processTurnWithTools(allocator, cmd.io, &provider, &state.session, state.resolved.model_id, state.skip_perms, state.format_json, on_token, false, cmd.writer, reader, state.temperature, state.max_tokens, state.top_p, state.variant, tools, &.{}) catch |err| {
+    var sa_ctx = SubAgentCtx{ .writer = cmd.writer };
+    const result = processor.processTurnWithTools(allocator, cmd.io, &provider, &state.session, state.resolved.model_id, state.skip_perms, state.format_json, on_token, false, cmd.writer, reader, state.temperature, state.max_tokens, state.top_p, state.variant, tools, &.{}, sa_ctx.callback()) catch |err| {
         if (err == error.LlmError) {
             try cmd.writer.print("\n\x1b[31mError:\x1b[0m API request failed (rate limited or server error). Try again later.\n", .{});
             return;
@@ -748,6 +752,7 @@ fn resolveAgent(allocator: std.mem.Allocator, io: std.Io, config_agents: ?std.St
                     .mode = .primary,
                     .description = try allocator.dupe(u8, cfg.description),
                     .system_prompt = try allocator.dupe(u8, cfg.systemPrompt),
+                    .capabilities = agent_mod.CapabilitySet.full(),
                 };
             }
         }
@@ -767,6 +772,12 @@ fn resolveAgent(allocator: std.mem.Allocator, io: std.Io, config_agents: ?std.St
                         .description = try allocator.dupe(u8, a.description),
                         .system_prompt = try allocator.dupe(u8, a.system_prompt),
                         .default_model = if (a.default_model) |m| try allocator.dupe(u8, m) else null,
+                        .capabilities = a.capabilities,
+                        .skills = if (a.skills.len > 0) blk: {
+                            const s = try allocator.alloc(agent_mod.SkillTag, a.skills.len);
+                            @memcpy(s, a.skills);
+                            break :blk s;
+                        } else &.{},
                     };
                 }
             }
@@ -781,6 +792,43 @@ fn resolveAgent(allocator: std.mem.Allocator, io: std.Io, config_agents: ?std.St
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
+
+const SubAgentCtx = struct {
+    writer: *Io.Writer,
+    fn onStatus(ctx: *anyopaque, _: []const u8, state: a2a_mod.TaskState, message: ?[]const u8) void {
+        const self: *SubAgentCtx = @ptrCast(@alignCast(ctx));
+        const prefix = switch (state) {
+            .submitted => "",
+            .working => "\x1b[36m…\x1b[0m ",
+            .completed => "\x1b[32m✓\x1b[0m ",
+            .failed, .rejected => "\x1b[31m✗\x1b[0m ",
+            .cancelled => "\x1b[33m◼\x1b[0m ",
+            .input_required => "\x1b[35m?\x1b[0m ",
+        };
+        if (message) |msg| {
+            self.writer.print("{s}{s}\n", .{ prefix, msg }) catch {};
+        }
+    }
+    fn onArtifact(ctx: *anyopaque, _: []const u8, artifact: *const a2a_mod.Artifact) void {
+        const self: *SubAgentCtx = @ptrCast(@alignCast(ctx));
+        if (artifact.name) |n| {
+            self.writer.print("  \x1b[90m📎 {s}\x1b[0m\n", .{n}) catch {};
+        }
+    }
+    fn onToken(ctx: *anyopaque, text: []const u8) void {
+        const self: *SubAgentCtx = @ptrCast(@alignCast(ctx));
+        _ = self.writer.write(text) catch {};
+    }
+
+    fn callback(self: *SubAgentCtx) a2a_mod.SubAgentCallback {
+        return a2a_mod.SubAgentCallback{
+            .context = @ptrCast(self),
+            .onStatusChange = onStatus,
+            .onArtifact = onArtifact,
+            .onToken = .{ .context = @ptrCast(self), .callback = onToken },
+        };
+    }
+};
 
 fn readStdinPipe(reader: *Io.Reader, allocator: std.mem.Allocator) !?[]const u8 {
     if (stdinIsTty()) return null;
