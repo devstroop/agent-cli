@@ -560,7 +560,7 @@ fn resolveAgent(allocator: std.mem.Allocator, io: std.Io, config_agents: ?std.St
                 };
             }
         }
-        // Check custom agent files (.agent/agents/*.md)
+        // Check custom agent files (.agent/custom/*.md)
         if (agent_mod.loadAgentFiles(allocator, io)) |custom_agents| {
             defer {
                 var idx: usize = 0;

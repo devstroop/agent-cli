@@ -152,9 +152,9 @@ fn parseFrontmatter(content: []const u8) ?AgentFrontmatter {
     return fm;
 }
 
-/// Load custom agents from .agent/agents/*.md files.
+/// Load custom agents from .agent/custom/*.md files.
 pub fn loadAgentFiles(allocator: std.mem.Allocator, io: std.Io) ![]Agent {
-    const dir = ".agent/agents";
+    const dir = ".agent/custom";
     const cmd = try std.fmt.allocPrint(allocator, "ls -1 '{s}'/*.md 2>/dev/null", .{dir});
     defer allocator.free(cmd);
 
