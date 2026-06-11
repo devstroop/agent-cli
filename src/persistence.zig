@@ -1,7 +1,7 @@
 const std = @import("std");
 const json = std.json;
 const session_mod = @import("session.zig");
-const llm = @import("llm.zig");
+const llm = @import("agent-sdk").llm;
 
 const SESSION_DIR_REL = ".config/agent/sessions";
 

@@ -1,5 +1,5 @@
 const std = @import("std");
-const llm = @import("llm.zig");
+const llm = @import("agent-sdk").llm;
 
 pub const Session = struct {
     allocator: std.mem.Allocator,
