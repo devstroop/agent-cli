@@ -168,14 +168,16 @@ pub const Client = struct {
             .allocator = allocator,
             .io = io,
             .server_name = allocator.dupe(u8, server_name) catch unreachable,
-            .transport = .{ .stdio = .{
-                .command = allocator.dupe(u8, command) catch unreachable,
-                .args = args_copy,
-                .env = env, // owned by caller (config)
-                .child = null,
-                .stdin_file = null,
-                .stdout_file = null,
-            } },
+            .transport = .{
+                .stdio = .{
+                    .command = allocator.dupe(u8, command) catch unreachable,
+                    .args = args_copy,
+                    .env = env, // owned by caller (config)
+                    .child = null,
+                    .stdin_file = null,
+                    .stdout_file = null,
+                },
+            },
         };
     }
 
@@ -365,7 +367,7 @@ pub const Client = struct {
                             const scheme_end = std.mem.indexOf(u8, state.base_url, "://") orelse return error.McpSseInvalidUrl;
                             const host_start = scheme_end + 3;
                             const path_start = std.mem.indexOfScalar(u8, state.base_url[host_start..], '/') orelse state.base_url.len;
-                            const base_origin = state.base_url[0..host_start + path_start];
+                            const base_origin = state.base_url[0 .. host_start + path_start];
                             state.endpoint_url = try std.fmt.allocPrint(self.allocator, "{s}{s}{s}", .{ base_origin, separator, d });
                         }
                         // Save the HTTP client for POST requests
