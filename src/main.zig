@@ -501,9 +501,9 @@ fn resolveModelProvider(allocator: std.mem.Allocator, config: *const config_mod.
         };
     }
 
-    // No model specified — try opencode.ai big-pickle as default fallback
+    // No model specified — try opencode.ai deepseek-v4-flash-free as default fallback
     if (config.provider == null or config.provider.?.count() == 0) {
-        return builtinOpencodeProvider(allocator, "big-pickle");
+        return builtinOpencodeProvider(allocator, "deepseek-v4-flash-free");
     }
 
     const providers = config.provider.?;
@@ -528,7 +528,7 @@ fn resolveModelProvider(allocator: std.mem.Allocator, config: *const config_mod.
         }
     }
     // Fallback to opencode.ai if no models found in config
-    return builtinOpencodeProvider(allocator, "big-pickle");
+    return builtinOpencodeProvider(allocator, "deepseek-v4-flash-free");
 }
 
 fn resolveApiKey(allocator: std.mem.Allocator, provider_id: []const u8) !?[]const u8 {
@@ -732,7 +732,7 @@ fn modelsExec(cmd: *cli.Cmd) !void {
             return;
         };
     } else (config_mod.find(cmd.io, cmd.allocator, null) catch null) orelse {
-        try cmd.writer.print("(default) opencode/big-pickle — set OPENCODE_API_KEY\n", .{});
+        try cmd.writer.print("(default) opencode/deepseek-v4-flash-free — set OPENCODE_API_KEY\n", .{});
         return;
     };
     defer config.deinit(cmd.allocator);

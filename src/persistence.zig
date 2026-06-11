@@ -267,7 +267,7 @@ test "parseSession round-trip" {
         \\  "id": "test-123",
         \\  "title": "Test Session",
         \\  "agent": "build",
-        \\  "model": { "providerID": "opencode", "id": "big-pickle" },
+        \\  "model": { "providerID": "opencode", "id": "deepseek-v4-flash-free" },
         \\  "created": 1718000000,
         \\  "updated": 1718000500,
         \\  "messages": [
@@ -287,7 +287,7 @@ test "parseSession round-trip" {
     try testing.expectEqualStrings(session.title, "Test Session");
     try testing.expectEqualStrings(session.agent.?, "build");
     try testing.expectEqualStrings(session.provider_id.?, "opencode");
-    try testing.expectEqualStrings(session.model_id.?, "big-pickle");
+    try testing.expectEqualStrings(session.model_id.?, "deepseek-v4-flash-free");
     try testing.expectEqual(session.messages.items.len, 4);
     try testing.expectEqualStrings(session.messages.items[0].role, "system");
     try testing.expectEqualStrings(session.messages.items[0].content, "You are a helpful assistant.");
