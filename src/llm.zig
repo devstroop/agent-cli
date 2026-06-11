@@ -159,8 +159,7 @@ pub const Provider = struct {
             if (attempt > 0) {
                 // Exponential backoff: 1s, 2s, 4s
                 const delay_ns: u64 = (@as(u64, 1) << @intCast(attempt - 1)) * 1_000_000_000;
-                const ts = std.c.timespec{ .sec = @intCast(delay_ns / 1_000_000_000), .nsec = @intCast(delay_ns % 1_000_000_000) };
-                _ = std.c.nanosleep(&ts, null);
+                std.time.sleep(delay_ns);
             }
             const result = self.sendRequest(req, false, &last_err_body);
             if (result) |resp| return resp else |err| {
@@ -244,8 +243,7 @@ pub const Provider = struct {
         while (attempt < 3) : (attempt += 1) {
             if (attempt > 0) {
                 const delay_ns: u64 = (@as(u64, 1) << @intCast(attempt - 1)) * 1_000_000_000;
-                const ts = std.c.timespec{ .sec = @intCast(delay_ns / 1_000_000_000), .nsec = @intCast(delay_ns % 1_000_000_000) };
-                _ = std.c.nanosleep(&ts, null);
+                std.time.sleep(delay_ns);
             }
             const result = self.streamRequest(req, writer, format_json, &last_err_body);
             if (result) |resp| return resp else |err| {
