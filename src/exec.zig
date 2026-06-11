@@ -233,15 +233,15 @@ pub fn saveAndShare(cmd: *cli.Cmd, allocator: std.mem.Allocator, session: *sessi
 
     const share_flag = cmd.flag("share", bool);
     if (share_flag) {
-        const share_url = share.shareSession(allocator, cmd.io, session.id, session.title) catch {
-            try cmd.writer.print("(sharing failed -- opencode.ai may be unreachable)\n", .{});
+        const share_path = share.shareSession(allocator, cmd.io, session) catch {
+            try cmd.writer.print("(sharing failed -- could not write share file)\n", .{});
             return;
         };
-        defer allocator.free(share_url);
+        defer allocator.free(share_path);
         if (format_json) {
-            try writeJsonLine(cmd.writer, allocator, .{ .type = "share", .url = share_url });
+            try writeJsonLine(cmd.writer, allocator, .{ .type = "share", .path = share_path });
         } else {
-            try cmd.writer.print("Share: {s}\n", .{share_url});
+            try cmd.writer.print("Share: file://{s}\n", .{share_path});
         }
     }
 }
