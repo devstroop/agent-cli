@@ -48,6 +48,9 @@ agent run --message "List files" --format json
 # Control sampling
 agent run --message "Write a poem" --temperature 0.8 --max-tokens 200 --top-p 0.9
 
+# Raw output (no markdown rendering)
+agent run --message "Write a Zig function" --raw
+
 # Use a different agent
 agent run --message "Plan this task" --agent plan
 
@@ -99,14 +102,29 @@ API keys are read from `{UPPERCASE_PROVIDER_ID}_API_KEY` environment variables (
 
 ## Output Formats
 
-**Default (human-readable):**
+**Default (human-readable, markdown rendered):**
+
+LLM output passes through a streaming markdown renderer. Code blocks get a dimmed gutter, headings are bold, inline formatting uses ANSI escapes:
+
 ```
-> run · openai/gpt-4o
-Hello! I can help you with that...
+> run · deepseek/deepseek-v4-flash
+Here's a Zig snippet:
+```zig
+│ const std = @import("std");
+│ std.debug.print("Hello!\n", .{});
+```
 [stop]
 ```
 
-**JSON (machine-parseable):**
+**Raw (passthrough, no rendering):**
+
+Use `--raw` to bypass markdown rendering — output is printed verbatim:
+
+```bash
+agent run --raw --message "Write a Zig function"
+```
+
+**JSON (machine-parseable, no rendering):**
 ```
 {"type":"text","text":"Hello! I can help..."}
 {"type":"stop","finish_reason":"stop","input_tokens":0,"output_tokens":0}
@@ -118,7 +136,7 @@ Sessions are saved to `~/.config/agent/sessions/<id>.json`. Use `--continue` / `
 
 ## Architecture
 
-16 source files, ~7,000 lines of Zig.
+17 source files, ~7,500 lines of Zig.
 
 | File | Purpose |
 |------|---------|
@@ -136,6 +154,7 @@ Sessions are saved to `~/.config/agent/sessions/<id>.json`. Use `--continue` / `
 | `cli.zig` | CLI framework — flag parsing, subcommands, help rendering |
 | `share.zig` | Share session to opencode.ai, generates shareable URL |
 | `sse.zig` | SSE protocol parser for server event streams |
+| `markdown.zig` | Streaming markdown-to-ANSI renderer — headings, code blocks, inline formatting |
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the full system design, data flow diagrams, and module dependency map.
 
