@@ -141,7 +141,7 @@ const runFlags = [_]cli.FlagDef{
     .{ .name = "continue", .type = .Bool, .description = "Continue the last session", .shortcut = "c", .default_value = .{ .Bool = false } },
     .{ .name = "session", .type = .String, .description = "Session ID to resume", .shortcut = "s", .default_value = .{ .String = "" } },
     .{ .name = "fork", .type = .Bool, .description = "Fork session before continuing", .default_value = .{ .Bool = false } },
-    .{ .name = "share", .type = .Bool, .description = "Create a shareable link for the session", .default_value = .{ .Bool = false } },
+    .{ .name = "share", .type = .Bool, .description = "Create a shareable Markdown file for the session", .default_value = .{ .Bool = false } },
     .{ .name = "config", .type = .String, .description = "Path to agent config.jsonc", .default_value = .{ .String = "" } },
     .{ .name = "max-tokens", .type = .Int, .description = "Maximum output tokens", .default_value = .{ .Int = 0 } },
     .{ .name = "temperature", .type = .String, .description = "Sampling temperature (0.0-2.0)", .default_value = .{ .String = "" } },
