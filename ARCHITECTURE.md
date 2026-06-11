@@ -69,6 +69,8 @@ Plan mode is for research-before-execution. It gets **read-only** tools:
 
 These let the LLM inspect the codebase before writing a plan. The plan output is written to `PLAN.md` by the CLI wrapper, not by a tool call. Single-turn with streaming.
 
+**⚠️ Exfiltration risk**: Plan mode grants both `read` (filesystem access) and `webfetch` (network access) simultaneously. A prompt could read a secrets file and embed its contents in a URL query string. The current permission model authorizes tools individually and does not reason about cross-tool data flows. For sensitive codebases, consider running Plan mode with `--skip-permissions` off and denying `webfetch` calls that follow `read` calls on sensitive paths.
+
 ### Review Mode — Read-Only + Diff
 
 Review mode inspects past sessions and current state. It gets read-only tools plus:
@@ -87,7 +89,7 @@ Edit mode is for **targeted modifications** to files. It gets constrained tools:
 - `snapshot` / `task` / `question` — session-level operations
 - All `mcp_*` tools — external tool servers
 
-This is a **security boundary**, not a convenience filter. Edit mode should be safe to run on untrusted input without sandboxing. Multi-turn with streaming, ask-tier permission by default.
+This is a **security boundary** against code execution, not a filesystem sandbox. Edit mode prevents arbitrary command execution (`bash`, `curl`, `git`) but the model can still read secrets, overwrite files, and corrupt repositories via `read`/`write`/`editFile`. Treat it as **non-executing**, not **safe without sandboxing**. Multi-turn with streaming, ask-tier permission by default.
 
 ### Execute Mode (Build) — Full Tools
 
@@ -203,6 +205,19 @@ If `.agent.md` exists in the workspace root, its contents are injected as a syst
 
 ### Bash `!` Expansion (`processor.zig`)
 Tool results can contain `!command` lines that get expanded by the processor before being sent back to the LLM, reducing tool-call roundtrips for common patterns.
+
+### Task (Sub-Agent Spawn) (`tool.zig`)
+
+The `task` tool spawns a sub-agent for reasoning-only delegation. It is **not** a full multi-agent system:
+
+- **Isolated context**: The sub-agent sees exactly 2 messages — its own system prompt (from `agent.zig`) + the user's task description. Zero access to parent session history, file contents, or tool results.
+- **No tools**: The sub-agent call uses `provider.complete()` (single-turn, `tools: null`). It cannot read files, run bash, search the web, or spawn further sub-agents.
+- **No recursion**: The sub-agent has no access to the `task` tool. Recursive agent spawning is structurally impossible.
+- **No permissions**: No permission checks — there's nothing to permit since the sub-agent has no capabilities.
+- **No budget**: No `max_tokens` or token budget is enforced. The sub-agent inherits the provider's default limits.
+- **Flat result**: The sub-agent's text response is returned as a plain `ToolResult.content` string. No structured output, no streaming passthrough.
+
+This is the simplest possible delegation primitive: a pure reasoning sandbox. Useful for "review this code", "suggest a name", or "check for consistency" — anything that benefits from a fresh context window with a specialized system prompt, but requires no tool access.
 
 ## Data Flow — Request Through Provider
 
