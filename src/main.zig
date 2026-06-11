@@ -32,6 +32,7 @@ const ExecState = struct {
     prompt_text: []const u8,
     prompt_allocated: bool,
     format_json: bool,
+    raw: bool,
     skip_perms: bool,
     project_dir: []const u8,
     temperature: ?f64,
@@ -66,6 +67,7 @@ fn setupExec(cmd: *cli.Cmd, mode: []const u8, agent_name: []const u8) !ExecState
     const max_tokens_raw = cmd.flag("max-tokens", i32);
     const temperature_str = cmd.flag("temperature", []const u8);
     const top_p_str = cmd.flag("top-p", []const u8);
+    const raw = cmd.flag("raw", bool);
 
     const max_tokens: ?u64 = if (max_tokens_raw > 0) @as(u64, @intCast(max_tokens_raw)) else null;
     const temperature: ?f64 = if (temperature_str.len > 0) std.fmt.parseFloat(f64, temperature_str) catch null else null;
@@ -198,6 +200,7 @@ fn setupExec(cmd: *cli.Cmd, mode: []const u8, agent_name: []const u8) !ExecState
         .prompt_text = prompt_text,
         .prompt_allocated = prompt_allocated,
         .format_json = format_json,
+        .raw = raw,
         .skip_perms = skip_perms,
         .project_dir = try allocator.dupe(u8, project_dir),
         .temperature = temperature,
@@ -241,7 +244,7 @@ fn askExec(cmd: *cli.Cmd) !void {
     try printBanner(cmd.writer, state.mode, state.resolved.model_id, state.format_json);
 
     var provider = llm.Provider.init(allocator, cmd.io, state.resolved.prov_cfg, state.resolved.api_key);
-    const result = processor.processAsk(allocator, cmd.io, &provider, &state.session, state.resolved.model_id, state.format_json, cmd.writer, state.temperature, state.max_tokens, state.top_p, state.variant) catch |err| {
+    const result = processor.processAsk(allocator, cmd.io, &provider, &state.session, state.resolved.model_id, state.format_json, state.raw, cmd.writer, state.temperature, state.max_tokens, state.top_p, state.variant) catch |err| {
         if (err == error.LlmError) {
             try cmd.writer.print("\n\x1b[31mError:\x1b[0m API request failed (rate limited or server error). Try again later.\n", .{});
             return;
@@ -276,7 +279,7 @@ fn planExec(cmd: *cli.Cmd) !void {
 
     var provider = llm.Provider.init(allocator, cmd.io, state.resolved.prov_cfg, state.resolved.api_key);
     const reader = if (state.skip_perms) null else cmd.reader;
-    const result = processor.processTurnWithTools(allocator, cmd.io, &provider, &state.session, state.resolved.model_id, state.skip_perms, state.format_json, false, cmd.writer, reader, state.temperature, state.max_tokens, state.top_p, state.variant, tools, &.{}) catch |err| {
+    const result = processor.processTurnWithTools(allocator, cmd.io, &provider, &state.session, state.resolved.model_id, state.skip_perms, state.format_json, state.raw, false, cmd.writer, reader, state.temperature, state.max_tokens, state.top_p, state.variant, tools, &.{}) catch |err| {
         if (err == error.LlmError) {
             try cmd.writer.print("\n\x1b[31mError:\x1b[0m API request failed (rate limited or server error). Try again later.\n", .{});
             return;
@@ -352,7 +355,7 @@ fn reviewExec(cmd: *cli.Cmd) !void {
         allocator.free(tools);
     }
     const reader = if (state.skip_perms) null else cmd.reader;
-    const result = processor.processTurnWithTools(allocator, cmd.io, &provider, &state.session, state.resolved.model_id, state.skip_perms, state.format_json, false, cmd.writer, reader, state.temperature, state.max_tokens, state.top_p, state.variant, tools, &.{}) catch |err| {
+    const result = processor.processTurnWithTools(allocator, cmd.io, &provider, &state.session, state.resolved.model_id, state.skip_perms, state.format_json, state.raw, false, cmd.writer, reader, state.temperature, state.max_tokens, state.top_p, state.variant, tools, &.{}) catch |err| {
         if (err == error.LlmError) {
             try cmd.writer.print("\n\x1b[31mError:\x1b[0m API request failed (rate limited or server error). Try again later.\n", .{});
             return;
@@ -383,7 +386,7 @@ fn editExec(cmd: *cli.Cmd) !void {
 
     var provider = llm.Provider.init(allocator, cmd.io, state.resolved.prov_cfg, state.resolved.api_key);
     const reader = if (state.skip_perms) null else cmd.reader;
-    const result = processor.processTurnWithTools(allocator, cmd.io, &provider, &state.session, state.resolved.model_id, state.skip_perms, state.format_json, false, cmd.writer, reader, state.temperature, state.max_tokens, state.top_p, state.variant, tools, &.{}) catch |err| {
+    const result = processor.processTurnWithTools(allocator, cmd.io, &provider, &state.session, state.resolved.model_id, state.skip_perms, state.format_json, state.raw, false, cmd.writer, reader, state.temperature, state.max_tokens, state.top_p, state.variant, tools, &.{}) catch |err| {
         if (err == error.LlmError) {
             try cmd.writer.print("\n\x1b[31mError:\x1b[0m API request failed (rate limited or server error). Try again later.\n", .{});
             return;
@@ -424,7 +427,7 @@ fn runExec(cmd: *cli.Cmd) !void {
     // Create provider and run processor loop
     var provider = llm.Provider.init(allocator, cmd.io, state.resolved.prov_cfg, state.resolved.api_key);
     const reader = if (state.skip_perms) null else cmd.reader;
-    const result = processor.processTurnWithConfig(allocator, cmd.io, &provider, &state.session, state.resolved.model_id, state.skip_perms, state.format_json, show_thinking, cmd.writer, reader, state.temperature, state.max_tokens, state.top_p, state.variant, &state.config) catch |err| {
+    const result = processor.processTurnWithConfig(allocator, cmd.io, &provider, &state.session, state.resolved.model_id, state.skip_perms, state.format_json, state.raw, show_thinking, cmd.writer, reader, state.temperature, state.max_tokens, state.top_p, state.variant, &state.config) catch |err| {
         if (err == error.LlmError) {
             try cmd.writer.print("\n\x1b[31mError:\x1b[0m API request failed (rate limited or server error). Try again later.\n", .{});
             return;
@@ -791,6 +794,7 @@ pub fn main(init: std.process.Init) !void {
     try run_cmd.addFlag(.{ .name = "model", .description = "Model to use (provider/model)", .shortcut = "m", .type = .String, .default_value = .{ .String = "" } });
     try run_cmd.addFlag(.{ .name = "agent", .description = "Agent type to use", .type = .String, .default_value = .{ .String = "" } });
     try run_cmd.addFlag(.{ .name = "dir", .description = "Project directory", .type = .String, .default_value = .{ .String = "" } });
+    try run_cmd.addFlag(.{ .name = "raw", .description = "Output raw text without markdown rendering", .type = .Bool, .default_value = .{ .Bool = false } });
     try run_cmd.addFlag(.{ .name = "format", .description = "Output format: default or json", .type = .String, .default_value = .{ .String = "default" } });
     try run_cmd.addFlag(.{ .name = "thinking", .description = "Show reasoning/thinking blocks", .type = .Bool, .default_value = .{ .Bool = false } });
     try run_cmd.addFlag(.{ .name = "skip-permissions", .description = "Skip permission prompts (use with caution)", .type = .Bool, .default_value = .{ .Bool = false } });
@@ -818,6 +822,7 @@ pub fn main(init: std.process.Init) !void {
         try ask_cmd.addFlag(.{ .name = "message", .description = "The question to ask", .type = .String, .default_value = .{ .String = "" } });
         try ask_cmd.addFlag(.{ .name = "model", .description = "Model to use (provider/model)", .shortcut = "m", .type = .String, .default_value = .{ .String = "" } });
         try ask_cmd.addFlag(.{ .name = "dir", .description = "Project directory", .type = .String, .default_value = .{ .String = "" } });
+        try ask_cmd.addFlag(.{ .name = "raw", .description = "Output raw text without markdown rendering", .type = .Bool, .default_value = .{ .Bool = false } });
         try ask_cmd.addFlag(.{ .name = "format", .description = "Output format: default or json", .type = .String, .default_value = .{ .String = "default" } });
         try ask_cmd.addFlag(.{ .name = "file", .description = "File(s) to attach", .shortcut = "f", .type = .String, .default_value = .{ .String = "" } });
         try ask_cmd.addFlag(.{ .name = "config", .description = "Path to agent config.jsonc", .type = .String, .default_value = .{ .String = "" } });
@@ -837,6 +842,7 @@ pub fn main(init: std.process.Init) !void {
         }, planExec);
         try plan_cmd.addFlag(.{ .name = "message", .description = "The task to plan for", .type = .String, .default_value = .{ .String = "" } });
         try plan_cmd.addFlag(.{ .name = "model", .description = "Model to use (provider/model)", .shortcut = "m", .type = .String, .default_value = .{ .String = "" } });
+        try plan_cmd.addFlag(.{ .name = "raw", .description = "Output raw text without markdown rendering", .type = .Bool, .default_value = .{ .Bool = false } });
         try plan_cmd.addFlag(.{ .name = "dir", .description = "Project directory", .type = .String, .default_value = .{ .String = "" } });
         try plan_cmd.addFlag(.{ .name = "file", .description = "File(s) to attach", .shortcut = "f", .type = .String, .default_value = .{ .String = "" } });
         try plan_cmd.addFlag(.{ .name = "config", .description = "Path to agent config.jsonc", .type = .String, .default_value = .{ .String = "" } });
@@ -853,6 +859,7 @@ pub fn main(init: std.process.Init) !void {
             .name = "review",
             .description = "Review a session and provide assessment",
         }, reviewExec);
+        try review_cmd.addFlag(.{ .name = "raw", .description = "Output raw text without markdown rendering", .type = .Bool, .default_value = .{ .Bool = false } });
         try review_cmd.addFlag(.{ .name = "session", .description = "Session ID to review", .shortcut = "s", .type = .String, .default_value = .{ .String = "" } });
         try review_cmd.addFlag(.{ .name = "model", .description = "Model to use (provider/model)", .shortcut = "m", .type = .String, .default_value = .{ .String = "" } });
         try review_cmd.addFlag(.{ .name = "dir", .description = "Project directory", .type = .String, .default_value = .{ .String = "" } });
@@ -871,6 +878,7 @@ pub fn main(init: std.process.Init) !void {
         try edit_cmd.addFlag(.{ .name = "message", .description = "The edit instruction", .type = .String, .default_value = .{ .String = "" } });
         try edit_cmd.addFlag(.{ .name = "model", .description = "Model to use (provider/model)", .shortcut = "m", .type = .String, .default_value = .{ .String = "" } });
         try edit_cmd.addFlag(.{ .name = "dir", .description = "Project directory", .type = .String, .default_value = .{ .String = "" } });
+        try edit_cmd.addFlag(.{ .name = "raw", .description = "Output raw text without markdown rendering", .type = .Bool, .default_value = .{ .Bool = false } });
         try edit_cmd.addFlag(.{ .name = "format", .description = "Output format: default or json", .type = .String, .default_value = .{ .String = "default" } });
         try edit_cmd.addFlag(.{ .name = "skip-permissions", .description = "Skip permission prompts (use with caution)", .type = .Bool, .default_value = .{ .Bool = false } });
         try edit_cmd.addFlag(.{ .name = "file", .description = "File(s) to edit", .shortcut = "f", .type = .String, .default_value = .{ .String = "" } });

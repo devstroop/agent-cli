@@ -4,6 +4,7 @@ const builtin = @import("builtin");
 const json = std.json;
 const config_mod = @import("config.zig");
 const flate = std.compress.flate;
+const markdown = @import("markdown.zig");
 
 fn sleep(ns: u64) void {
     if (comptime builtin.os.tag == .windows) {
@@ -249,6 +250,7 @@ pub const Provider = struct {
         req: ChatRequest,
         writer: *std.Io.Writer,
         format_json: bool,
+        md: ?*markdown.MdRenderer,
     ) !ChatResponse {
         var last_err_body = std.ArrayList(u8).initCapacity(self.allocator, 512) catch unreachable;
         defer last_err_body.deinit(self.allocator);
@@ -259,7 +261,7 @@ pub const Provider = struct {
                 const delay_ns: u64 = (@as(u64, 1) << @intCast(attempt - 1)) * 1_000_000_000;
                 sleep(delay_ns);
             }
-            const result = self.streamRequest(req, writer, format_json, &last_err_body);
+            const result = self.streamRequest(req, writer, format_json, md, &last_err_body);
             if (result) |resp| return resp else |err| {
                 if (err == error.RateLimited) continue;
                 return err;
@@ -270,7 +272,7 @@ pub const Provider = struct {
     }
 
     /// Send a single streaming HTTP request. Returns error.RateLimited for 429 so caller can retry.
-    fn streamRequest(self: *Provider, req: ChatRequest, writer: *std.Io.Writer, format_json: bool, last_err_body: *std.ArrayList(u8)) !ChatResponse {
+    fn streamRequest(self: *Provider, req: ChatRequest, writer: *std.Io.Writer, format_json: bool, md: ?*markdown.MdRenderer, last_err_body: *std.ArrayList(u8)) !ChatResponse {
         const url = try self.chatUrl();
         defer self.allocator.free(url);
 
@@ -339,9 +341,9 @@ pub const Provider = struct {
                     if (std.mem.startsWith(u8, sse_line.items, "data: ")) {
                         const data = sse_line.items[6..];
                         if (std.mem.eql(u8, data, "[DONE]")) break;
-                        try processSSEData(self.allocator, &content_buf, &tool_calls, &finish_reason, &input_tokens, &output_tokens, data, writer, format_json);
+                        try processSSEData(self.allocator, &content_buf, &tool_calls, &finish_reason, &input_tokens, &output_tokens, data, writer, format_json, md);
                     } else if (sse_line.items.len > 0 and sse_line.items[0] == '{') {
-                        try processSSEData(self.allocator, &content_buf, &tool_calls, &finish_reason, &input_tokens, &output_tokens, sse_line.items, writer, format_json);
+                        try processSSEData(self.allocator, &content_buf, &tool_calls, &finish_reason, &input_tokens, &output_tokens, sse_line.items, writer, format_json, md);
                     }
                     sse_line.clearRetainingCapacity();
                 } else {
@@ -354,10 +356,13 @@ pub const Provider = struct {
             if (std.mem.startsWith(u8, sse_line.items, "data: ")) {
                 const data = sse_line.items[6..];
                 if (!std.mem.eql(u8, data, "[DONE]")) {
-                    try processSSEData(self.allocator, &content_buf, &tool_calls, &finish_reason, &input_tokens, &output_tokens, data, writer, format_json);
+                    try processSSEData(self.allocator, &content_buf, &tool_calls, &finish_reason, &input_tokens, &output_tokens, data, writer, format_json, md);
                 }
             }
         }
+
+        // Flush any remaining buffered markdown output.
+        if (md) |r| try r.flush();
 
         // Build final tool_calls array
         const tcs = try self.allocator.alloc(ToolCall, tool_calls.items.len);
@@ -408,6 +413,7 @@ fn processSSEData(
     data: []const u8,
     writer: *std.Io.Writer,
     format_json: bool,
+    md: ?*markdown.MdRenderer,
 ) !void {
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, data, .{}) catch return;
     defer parsed.deinit();
@@ -442,7 +448,11 @@ fn processSSEData(
                 defer allocator.free(line);
                 try writer.print("{s}\n", .{line});
             } else {
-                try writer.print("{s}", .{c.string});
+                if (md) |renderer| {
+                    try renderer.feed(c.string);
+                } else {
+                    try writer.print("{s}", .{c.string});
+                }
             }
             try writer.flush();
         }

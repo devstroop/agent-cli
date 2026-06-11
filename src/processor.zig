@@ -6,6 +6,7 @@ const permission_mod = @import("permission.zig");
 const agent_mod = @import("agent.zig");
 const config_mod = @import("config.zig");
 const mcp = @import("mcp.zig");
+const markdown = @import("markdown.zig");
 
 const ToolDispatch = struct {
     name: []const u8,
@@ -175,6 +176,7 @@ pub fn processAsk(
     session: *session_mod.Session,
     model_id: []const u8,
     format_json: bool,
+    raw: bool,
     writer: *std.Io.Writer,
     temperature: ?f64,
     max_tokens: ?u64,
@@ -184,6 +186,13 @@ pub fn processAsk(
     _ = io;
     var input_tokens: u64 = 0;
     var output_tokens: u64 = 0;
+
+    // Set up markdown renderer (unless --raw or --format json).
+    var md_renderer: ?markdown.MdRenderer = null;
+    if (!raw and !format_json) {
+        md_renderer = markdown.MdRenderer.init(allocator, writer);
+    }
+    defer if (md_renderer) |*r| r.deinit();
 
     const msgs = session.buildMessages(null);
     const response = try provider.completeStream(
@@ -198,6 +207,7 @@ pub fn processAsk(
         },
         writer,
         format_json,
+        if (md_renderer) |*r| r else null,
     );
     defer response.deinit(allocator);
 
@@ -246,6 +256,7 @@ pub fn processTurn(
     model_id: []const u8,
     skip_perms: bool,
     format_json: bool,
+    raw: bool,
     show_thinking: bool,
     writer: *std.Io.Writer,
     reader: ?*std.Io.Reader,
@@ -261,7 +272,7 @@ pub fn processTurn(
         for (tools) |*t| t.deinit(allocator);
         allocator.free(tools);
     }
-    return processTurnWithTools(allocator, io, provider, session, model_id, skip_perms, format_json, show_thinking, writer, reader, temperature, max_tokens, top_p, variant, tools, &.{});
+    return processTurnWithTools(allocator, io, provider, session, model_id, skip_perms, format_json, raw, show_thinking, writer, reader, temperature, max_tokens, top_p, variant, tools, &.{});
 }
 
 /// Like processTurn but accepts a config for MCP server discovery.
@@ -273,6 +284,7 @@ pub fn processTurnWithConfig(
     model_id: []const u8,
     skip_perms: bool,
     format_json: bool,
+    raw: bool,
     show_thinking: bool,
     writer: *std.Io.Writer,
     reader: ?*std.Io.Reader,
@@ -360,7 +372,7 @@ pub fn processTurnWithConfig(
         allocator.free(all_tools);
     }
 
-    return processTurnWithTools(allocator, io, provider, session, model_id, skip_perms, format_json, show_thinking, writer, reader, temperature, max_tokens, top_p, variant, all_tools, mcp_clients.items);
+    return processTurnWithTools(allocator, io, provider, session, model_id, skip_perms, format_json, raw, show_thinking, writer, reader, temperature, max_tokens, top_p, variant, all_tools, mcp_clients.items);
 }
 
 /// Shallow-copy a message, preserving all fields including `tool_calls` and `tool_call_id`.
@@ -394,6 +406,7 @@ pub fn processTurnWithTools(
     model_id: []const u8,
     skip_perms: bool,
     format_json: bool,
+    raw: bool,
     show_thinking: bool,
     writer: *std.Io.Writer,
     reader: ?*std.Io.Reader,
@@ -405,6 +418,13 @@ pub fn processTurnWithTools(
     mcp_clients: []mcp.Client,
 ) !ProcessResult {
     _ = show_thinking; // reserved for reasoning block display
+
+    // Set up markdown renderer (unless --raw or --format json).
+    var md_renderer: ?markdown.MdRenderer = null;
+    if (!raw and !format_json) {
+        md_renderer = markdown.MdRenderer.init(allocator, writer);
+    }
+    defer if (md_renderer) |*r| r.deinit();
 
     var perm_manager = permission_mod.Manager.init(allocator);
     defer perm_manager.deinit();
@@ -479,6 +499,7 @@ pub fn processTurnWithTools(
             },
             writer,
             format_json,
+            if (md_renderer) |*r| r else null,
         );
         defer response.deinit(allocator);
 
