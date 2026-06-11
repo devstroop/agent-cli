@@ -176,9 +176,6 @@ runExec()  ──────────────►  processTurnWithTools()
 | `permission.zig` | 126 | Glob-based permission rule engine (allow/ask/deny tiers) | (none) |
 | `cli.zig` | 434 | CLI framework (flag parsing, subcommands, help rendering) | (std.process.Init) |
 | `mcp.zig` | 503 | MCP client — HTTP/stdio/SSE transports, JSON-RPC dispatch, tools/list + tools/call | (std.http, std.process) |
-| `share.zig` | 57 | Share session to opencode.ai, generates shareable URL | (std.http, types) |
-| `client.zig` | 533 | OpenCode server SDK (not used by `agent run`) | types, sse |
-| `types.zig` | 573 | OpenCode SDK v2 type definitions (not used by `agent run`) | (none) |
 | `sse.zig` | 181 | Server-protocol SSE parser (not used by `agent run`) | types |
 
 ## Key Phase 2 Features

@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Zig](https://img.shields.io/badge/zig-0.16.0-orange)](https://ziglang.org/download/)
 
-A lightweight CLI for LLM-powered agentic workflows. Built in Zig — no runtime dependencies, single static binary.
+A CLI-native AI agent that reasons, runs tools, and edits code. Built in Zig — ships as a single static binary with zero runtime dependencies.
 
 ## Install
 
@@ -27,7 +27,7 @@ agent run [options]
 agent run --message "Write a Python script to sort files by date"
 
 # Specify model
-agent run -m "opencode/deepseek-v4-flash-free" --message "Say hello"
+agent run -m "deepseek/deepseek-v4-flash" --message "Say hello"
 
 # Pipe input
 echo "Refactor this code" | agent run
@@ -95,13 +95,13 @@ Place `config.jsonc` at `~/.config/agent/config.jsonc` or `.agent/config.jsonc` 
 }
 ```
 
-API keys are read from `{UPPERCASE_PROVIDER_ID}_API_KEY` environment variables (e.g. `LLM_GATEWAY_API_KEY`, `OPENCODE_API_KEY`).
+API keys are read from `{UPPERCASE_PROVIDER_ID}_API_KEY` environment variables (e.g. `DEEPSEEK_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`).
 
 ## Output Formats
 
 **Default (human-readable):**
 ```
-> build · openai/gpt-4o
+> run · openai/gpt-4o
 Hello! I can help you with that...
 [stop]
 ```
@@ -135,8 +135,6 @@ Sessions are saved to `~/.config/agent/sessions/<id>.json`. Use `--continue` / `
 | `mcp.zig` | MCP client — HTTP/stdio/SSE transports, JSON-RPC dispatch, tools/list + tools/call |
 | `cli.zig` | CLI framework — flag parsing, subcommands, help rendering |
 | `share.zig` | Share session to opencode.ai, generates shareable URL |
-| `client.zig` | OpenCode server SDK (not used by `agent run`) |
-| `types.zig` | OpenCode SDK v2 type definitions |
 | `sse.zig` | SSE protocol parser for server event streams |
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the full system design, data flow diagrams, and module dependency map.

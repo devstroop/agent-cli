@@ -24,6 +24,7 @@ const share = @import("share.zig");
 
 /// Shared state extracted from CLI flags for mode exec functions.
 const ExecState = struct {
+    mode: []const u8,
     config: config_mod.Config,
     resolved: ModelResolution,
     agent: agent_mod.Agent,
@@ -51,7 +52,7 @@ const ExecState = struct {
     }
 };
 
-fn setupExec(cmd: *cli.Cmd, agent_name: []const u8) !ExecState {
+fn setupExec(cmd: *cli.Cmd, mode: []const u8, agent_name: []const u8) !ExecState {
     const message = cmd.flag("message", []const u8);
     const model_str = cmd.flag("model", []const u8);
     const format = cmd.flag("format", []const u8);
@@ -189,6 +190,7 @@ fn setupExec(cmd: *cli.Cmd, agent_name: []const u8) !ExecState {
     }
 
     return ExecState{
+        .mode = mode,
         .config = config,
         .resolved = resolved,
         .agent = agent,
@@ -205,10 +207,9 @@ fn setupExec(cmd: *cli.Cmd, agent_name: []const u8) !ExecState {
     };
 }
 
-fn printBanner(writer: *std.Io.Writer, agent_name: ?[]const u8, model_id: []const u8, format_json: bool) !void {
+fn printBanner(writer: *std.Io.Writer, mode: []const u8, model_id: []const u8, format_json: bool) !void {
     if (!format_json) {
-        const aname = agent_name orelse "default";
-        try writer.print("> {s} \xc2\xb7 {s}\n", .{ aname, model_id });
+        try writer.print("> {s} \xc2\xb7 {s}\n", .{ mode, model_id });
         try writer.flush();
     }
 }
@@ -234,10 +235,10 @@ fn saveAndShare(cmd: *cli.Cmd, allocator: std.mem.Allocator, session: *session_m
 
 fn askExec(cmd: *cli.Cmd) !void {
     const allocator = cmd.allocator;
-    var state = try setupExec(cmd, "ask");
+    var state = try setupExec(cmd, "ask", "ask");
     defer state.deinit(allocator);
 
-    try printBanner(cmd.writer, state.session.agent, state.resolved.model_id, state.format_json);
+    try printBanner(cmd.writer, state.mode, state.resolved.model_id, state.format_json);
 
     var provider = llm.Provider.init(allocator, cmd.io, state.resolved.prov_cfg, state.resolved.api_key);
     const result = processor.processAsk(allocator, cmd.io, &provider, &state.session, state.resolved.model_id, state.format_json, cmd.writer, state.temperature, state.max_tokens, state.top_p, state.variant) catch |err| {
@@ -258,10 +259,10 @@ fn askExec(cmd: *cli.Cmd) !void {
 
 fn planExec(cmd: *cli.Cmd) !void {
     const allocator = cmd.allocator;
-    var state = try setupExec(cmd, "plan");
+    var state = try setupExec(cmd, "plan", "plan");
     defer state.deinit(allocator);
 
-    try printBanner(cmd.writer, state.session.agent, state.resolved.model_id, state.format_json);
+    try printBanner(cmd.writer, state.mode, state.resolved.model_id, state.format_json);
 
     // Build read-only tools for research-before-planning
     var params_arena = std.heap.ArenaAllocator.init(allocator);
@@ -318,7 +319,7 @@ fn reviewExec(cmd: *cli.Cmd) !void {
     defer target_session.deinit();
 
     // Build the analysis context
-    var state = try setupExec(cmd, "review");
+    var state = try setupExec(cmd, "review", "review");
     defer state.deinit(allocator);
 
     // Prepend the target session history to the analysis prompt
@@ -365,10 +366,10 @@ fn reviewExec(cmd: *cli.Cmd) !void {
 
 fn editExec(cmd: *cli.Cmd) !void {
     const allocator = cmd.allocator;
-    var state = try setupExec(cmd, "edit");
+    var state = try setupExec(cmd, "edit", "edit");
     defer state.deinit(allocator);
 
-    try printBanner(cmd.writer, state.session.agent, state.resolved.model_id, state.format_json);
+    try printBanner(cmd.writer, state.mode, state.resolved.model_id, state.format_json);
 
     // Build filtered tool defs (read + write, no bash/MCP/web)
     var params_arena = std.heap.ArenaAllocator.init(allocator);
@@ -400,12 +401,12 @@ fn editExec(cmd: *cli.Cmd) !void {
 
 fn runExec(cmd: *cli.Cmd) !void {
     const allocator = cmd.allocator;
-    var state = try setupExec(cmd, "build");
+    var state = try setupExec(cmd, "run", "build");
     defer state.deinit(allocator);
 
     const show_thinking = cmd.flag("thinking", bool);
 
-    try printBanner(cmd.writer, state.session.agent, state.resolved.model_id, state.format_json);
+    try printBanner(cmd.writer, state.mode, state.resolved.model_id, state.format_json);
 
     // Handle --command (slash command)
     const command_str = cmd.flag("command", []const u8);
