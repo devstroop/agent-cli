@@ -1,8 +1,22 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const json = std.json;
 const config_mod = @import("config.zig");
 const flate = std.compress.flate;
+
+fn sleep(ns: u64) void {
+    if (comptime builtin.os.tag == .windows) {
+        const interval: i64 = -@as(i64, @intCast(ns / 100));
+        _ = std.os.windows.ntdll.NtDelayExecution(.FALSE, &interval);
+    } else {
+        const ts = std.c.timespec{
+            .sec = @intCast(ns / 1_000_000_000),
+            .nsec = @intCast(ns % 1_000_000_000),
+        };
+        _ = std.c.nanosleep(&ts, null);
+    }
+}
 
 pub const ToolCall = struct {
     id: []const u8,
@@ -159,7 +173,7 @@ pub const Provider = struct {
             if (attempt > 0) {
                 // Exponential backoff: 1s, 2s, 4s
                 const delay_ns: u64 = (@as(u64, 1) << @intCast(attempt - 1)) * 1_000_000_000;
-                std.time.sleep(delay_ns);
+                sleep(delay_ns);
             }
             const result = self.sendRequest(req, false, &last_err_body);
             if (result) |resp| return resp else |err| {
@@ -243,7 +257,7 @@ pub const Provider = struct {
         while (attempt < 3) : (attempt += 1) {
             if (attempt > 0) {
                 const delay_ns: u64 = (@as(u64, 1) << @intCast(attempt - 1)) * 1_000_000_000;
-                std.time.sleep(delay_ns);
+                sleep(delay_ns);
             }
             const result = self.streamRequest(req, writer, format_json, &last_err_body);
             if (result) |resp| return resp else |err| {
