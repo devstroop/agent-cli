@@ -309,9 +309,26 @@ pub fn processTurnWithConfig(
         if (cfg.mcp_servers) |servers| {
             var iter = servers.iterator();
             while (iter.next()) |entry| {
-                var client = mcp.Client.init(allocator, io, entry.value_ptr.url, entry.key_ptr.*);
+                const cfg_val = entry.value_ptr;
+                const name = entry.key_ptr.*;
+
+                // Determine transport: explicit > implicit (command→stdio, url→http, url+"sse"→sse)
+                const transport: enum { http, stdio, sse } = if (cfg_val.transport) |t| blk: {
+                    if (std.mem.eql(u8, t, "stdio")) break :blk .stdio;
+                    if (std.mem.eql(u8, t, "sse")) break :blk .sse;
+                    break :blk .http;
+                } else if (cfg_val.command != null) .stdio else if (cfg_val.url != null) .http else {
+                    std.log.warn("MCP '{s}': no url or command, skipping", .{name});
+                    continue;
+                };
+
+                var client: mcp.Client = switch (transport) {
+                    .http => mcp.Client.initHttp(allocator, io, cfg_val.url orelse "", name),
+                    .stdio => mcp.Client.initStdio(allocator, io, cfg_val.command orelse "", cfg_val.args orelse &.{}, cfg_val.env, name),
+                    .sse => mcp.Client.initSse(allocator, io, cfg_val.url orelse "", name),
+                };
                 const tools = client.listTools(allocator, pa) catch |err| {
-                    std.log.warn("MCP '{s}' tool discovery failed: {}", .{ entry.key_ptr.*, err });
+                    std.log.warn("MCP '{s}' tool discovery failed: {}", .{ name, err });
                     client.deinit();
                     continue;
                 };

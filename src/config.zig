@@ -13,10 +13,29 @@ pub const AgentConfig = struct {
 };
 
 pub const MCPServerConfig = struct {
-    url: []const u8,
+    /// Transport type: "http" (default for url), "stdio" (default for command), "sse"
+    transport: ?[]const u8 = null,
+    url: ?[]const u8 = null,
+    command: ?[]const u8 = null,
+    args: ?[]const []const u8 = null,
+    env: ?std.StringHashMap([]const u8) = null,
 
     pub fn deinit(self: *MCPServerConfig, allocator: std.mem.Allocator) void {
-        allocator.free(self.url);
+        if (self.transport) |t| allocator.free(t);
+        if (self.url) |u| allocator.free(u);
+        if (self.command) |c| allocator.free(c);
+        if (self.args) |arr| {
+            for (arr) |a| allocator.free(a);
+            allocator.free(arr);
+        }
+        if (self.env) |*env| {
+            var iter = env.iterator();
+            while (iter.next()) |entry| {
+                allocator.free(entry.key_ptr.*);
+                allocator.free(entry.value_ptr.*);
+            }
+            env.deinit();
+        }
     }
 };
 
@@ -273,9 +292,52 @@ pub fn parse(allocator: std.mem.Allocator, json_text: []const u8) !Config {
                 const mk = try allocator.dupe(u8, entry.key_ptr.*);
                 errdefer allocator.free(mk);
                 if (entry.value_ptr.* != .object) continue;
-                const url = try allocator.dupe(u8, entry.value_ptr.*.object.get("url").?.string);
-                errdefer allocator.free(url);
-                try mcp_map.put(mk, .{ .url = url });
+                const obj = entry.value_ptr.*.object;
+
+                var server_cfg = MCPServerConfig{};
+
+                if (obj.get("transport")) |tv| {
+                    if (tv == .string) server_cfg.transport = try allocator.dupe(u8, tv.string);
+                }
+                if (obj.get("url")) |uv| {
+                    if (uv == .string) server_cfg.url = try allocator.dupe(u8, uv.string);
+                }
+                if (obj.get("command")) |cv| {
+                    if (cv == .string) server_cfg.command = try allocator.dupe(u8, cv.string);
+                }
+                if (obj.get("args")) |av| {
+                    if (av == .array) {
+                        const arr = try allocator.alloc([]const u8, av.array.items.len);
+                        errdefer allocator.free(arr);
+                        for (av.array.items, 0..) |item, i| {
+                            arr[i] = try allocator.dupe(u8, item.string);
+                        }
+                        server_cfg.args = arr;
+                    }
+                }
+                if (obj.get("env")) |ev| {
+                    if (ev == .object) {
+                        var env_map = std.StringHashMap([]const u8).init(allocator);
+                        errdefer {
+                            var eiter = env_map.iterator();
+                            while (eiter.next()) |eentry| {
+                                allocator.free(eentry.key_ptr.*);
+                                allocator.free(eentry.value_ptr.*);
+                            }
+                            env_map.deinit();
+                        }
+                        var eiter = ev.object.iterator();
+                        while (eiter.next()) |eentry| {
+                            const ek = try allocator.dupe(u8, eentry.key_ptr.*);
+                            errdefer allocator.free(ek);
+                            const evl = try allocator.dupe(u8, eentry.value_ptr.*.string);
+                            errdefer allocator.free(evl);
+                            try env_map.put(ek, evl);
+                        }
+                        server_cfg.env = env_map;
+                    }
+                }
+                try mcp_map.put(mk, server_cfg);
             }
             config.mcp_servers = mcp_map;
         }
