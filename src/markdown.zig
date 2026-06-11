@@ -30,11 +30,11 @@ pub const MdRenderer = struct {
     line_buf: std.ArrayList(u8),
     allocator: std.mem.Allocator,
 
-    pub fn init(allocator: std.mem.Allocator, writer: *std.Io.Writer) MdRenderer {
+    pub fn init(allocator: std.mem.Allocator, writer: *std.Io.Writer) !MdRenderer {
         return MdRenderer{
             .writer = writer,
             .in_code_block = false,
-            .line_buf = std.ArrayList(u8).initCapacity(allocator, 4096) catch unreachable,
+            .line_buf = try std.ArrayList(u8).initCapacity(allocator, 4096),
             .allocator = allocator,
         };
     }
@@ -287,7 +287,7 @@ fn captureWritten(cap: *std.Io.Writer.Allocating) []const u8 {
 test "bold **text**" {
     var cap = captureInit(testing.allocator);
     defer cap.deinit();
-    var md = MdRenderer.init(testing.allocator, &cap.writer);
+    var md = try MdRenderer.init(testing.allocator, &cap.writer);
     defer md.deinit();
     try md.feed("hello **world**\n");
     try md.flush();
@@ -299,7 +299,7 @@ test "bold **text**" {
 test "italic *text*" {
     var cap = captureInit(testing.allocator);
     defer cap.deinit();
-    var md = MdRenderer.init(testing.allocator, &cap.writer);
+    var md = try MdRenderer.init(testing.allocator, &cap.writer);
     defer md.deinit();
     try md.feed("hello *world* here\n");
     try md.flush();
@@ -311,7 +311,7 @@ test "italic *text*" {
 test "inline code `code`" {
     var cap = captureInit(testing.allocator);
     defer cap.deinit();
-    var md = MdRenderer.init(testing.allocator, &cap.writer);
+    var md = try MdRenderer.init(testing.allocator, &cap.writer);
     defer md.deinit();
     try md.feed("use `malloc` here\n");
     try md.flush();
@@ -323,7 +323,7 @@ test "inline code `code`" {
 test "code block with gutter" {
     var cap = captureInit(testing.allocator);
     defer cap.deinit();
-    var md = MdRenderer.init(testing.allocator, &cap.writer);
+    var md = try MdRenderer.init(testing.allocator, &cap.writer);
     defer md.deinit();
     try md.feed("```zig\ncode here\nmore code\n```\n");
     try md.flush();
@@ -337,7 +337,7 @@ test "code block with gutter" {
 test "heading # level 1" {
     var cap = captureInit(testing.allocator);
     defer cap.deinit();
-    var md = MdRenderer.init(testing.allocator, &cap.writer);
+    var md = try MdRenderer.init(testing.allocator, &cap.writer);
     defer md.deinit();
     try md.feed("# Title\n");
     try md.flush();
@@ -349,7 +349,7 @@ test "heading # level 1" {
 test "heading ## level 2 (bold, no underline)" {
     var cap = captureInit(testing.allocator);
     defer cap.deinit();
-    var md = MdRenderer.init(testing.allocator, &cap.writer);
+    var md = try MdRenderer.init(testing.allocator, &cap.writer);
     defer md.deinit();
     try md.feed("## Subtitle\n");
     try md.flush();
@@ -361,7 +361,7 @@ test "heading ## level 2 (bold, no underline)" {
 test "unordered list - and *" {
     var cap = captureInit(testing.allocator);
     defer cap.deinit();
-    var md = MdRenderer.init(testing.allocator, &cap.writer);
+    var md = try MdRenderer.init(testing.allocator, &cap.writer);
     defer md.deinit();
     try md.feed("- item one\n* item two\n");
     try md.flush();
@@ -374,7 +374,7 @@ test "unordered list - and *" {
 test "link [text](url) — URL discarded, text in blue" {
     var cap = captureInit(testing.allocator);
     defer cap.deinit();
-    var md = MdRenderer.init(testing.allocator, &cap.writer);
+    var md = try MdRenderer.init(testing.allocator, &cap.writer);
     defer md.deinit();
     try md.feed("see [docs](https://example.com)\n");
     try md.flush();
@@ -387,7 +387,7 @@ test "link [text](url) — URL discarded, text in blue" {
 test "mixed inline **bold** *italic* `code`" {
     var cap = captureInit(testing.allocator);
     defer cap.deinit();
-    var md = MdRenderer.init(testing.allocator, &cap.writer);
+    var md = try MdRenderer.init(testing.allocator, &cap.writer);
     defer md.deinit();
     try md.feed("**bold** *italic* `code`\n");
     try md.flush();
@@ -401,7 +401,7 @@ test "mixed inline **bold** *italic* `code`" {
 test "streaming: partial line across two feed calls" {
     var cap = captureInit(testing.allocator);
     defer cap.deinit();
-    var md = MdRenderer.init(testing.allocator, &cap.writer);
+    var md = try MdRenderer.init(testing.allocator, &cap.writer);
     defer md.deinit();
     try md.feed("hello **wor");
     try md.feed("ld** done\n");
@@ -415,7 +415,7 @@ test "streaming: partial line across two feed calls" {
 test "blockquote > text" {
     var cap = captureInit(testing.allocator);
     defer cap.deinit();
-    var md = MdRenderer.init(testing.allocator, &cap.writer);
+    var md = try MdRenderer.init(testing.allocator, &cap.writer);
     defer md.deinit();
     try md.feed("> quoted text\n");
     try md.flush();
@@ -428,7 +428,7 @@ test "blockquote > text" {
 test "horizontal rule ---" {
     var cap = captureInit(testing.allocator);
     defer cap.deinit();
-    var md = MdRenderer.init(testing.allocator, &cap.writer);
+    var md = try MdRenderer.init(testing.allocator, &cap.writer);
     defer md.deinit();
     try md.feed("---\n");
     try md.flush();
@@ -440,7 +440,7 @@ test "horizontal rule ---" {
 test "ordered list 1. item" {
     var cap = captureInit(testing.allocator);
     defer cap.deinit();
-    var md = MdRenderer.init(testing.allocator, &cap.writer);
+    var md = try MdRenderer.init(testing.allocator, &cap.writer);
     defer md.deinit();
     try md.feed("1. first\n2. second\n");
     try md.flush();
@@ -453,7 +453,7 @@ test "ordered list 1. item" {
 test "flush renders trailing partial line raw" {
     var cap = captureInit(testing.allocator);
     defer cap.deinit();
-    var md = MdRenderer.init(testing.allocator, &cap.writer);
+    var md = try MdRenderer.init(testing.allocator, &cap.writer);
     defer md.deinit();
     try md.feed("unfinished");
     // No \n — flush should emit it as-is.
@@ -466,7 +466,7 @@ test "flush renders trailing partial line raw" {
 test "flush closes open code block" {
     var cap = captureInit(testing.allocator);
     defer cap.deinit();
-    var md = MdRenderer.init(testing.allocator, &cap.writer);
+    var md = try MdRenderer.init(testing.allocator, &cap.writer);
     defer md.deinit();
     try md.feed("```zig\nsome code\n");
     // No closing fence — flush should reset to ANSI normal.
