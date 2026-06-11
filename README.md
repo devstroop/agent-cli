@@ -118,6 +118,8 @@ Sessions are saved to `~/.config/agent/sessions/<id>.json`. Use `--continue` / `
 
 ## Architecture
 
+16 source files, ~7,000 lines of Zig.
+
 | File | Purpose |
 |------|---------|
 | `main.zig` | CLI entrypoint, flag parsing, model resolution, session lifecycle |
@@ -126,10 +128,13 @@ Sessions are saved to `~/.config/agent/sessions/<id>.json`. Use `--continue` / `
 | `processor.zig` | Multi-turn tool loop (max 25), tool dispatch, permission prompts, JSON output |
 | `tool.zig` | 14 tool executors: bash, read, write, glob, grep, webfetch, editFile, question, skill, todoWrite, plan, webSearch, snapshot, task |
 | `session.zig` | In-memory session state (messages, tool results, token counts) |
-| `agent.zig` | 7 built-in agent definitions and system prompts |
+| `agent.zig` | 8 built-in agent definitions and system prompts |
 | `persistence.zig` | JSON file read/write for sessions |
 | `context.zig` | Context renderer — date, OS, workspace, git, config, instructions |
 | `permission.zig` | Glob-based permission rule engine with interactive prompts |
+| `mcp.zig` | MCP client — HTTP/stdio/SSE transports, JSON-RPC dispatch, tools/list + tools/call |
+| `cli.zig` | CLI framework — flag parsing, subcommands, help rendering |
+| `share.zig` | Share session to opencode.ai, generates shareable URL |
 | `client.zig` | OpenCode server SDK (not used by `agent run`) |
 | `types.zig` | OpenCode SDK v2 type definitions |
 | `sse.zig` | SSE protocol parser for server event streams |

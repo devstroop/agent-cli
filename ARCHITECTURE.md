@@ -1,6 +1,6 @@
 # Architecture
 
-agent-cli is a self-contained Zig CLI for LLM-based agent workflows. It runs a multi-turn tool loop against an OpenAI-compatible `/chat/completions` endpoint. 16 source files, ~6,155 lines of Zig.
+agent-cli is a self-contained Zig CLI for LLM-based agent workflows. It runs a multi-turn tool loop against an OpenAI-compatible `/chat/completions` endpoint. 16 source files, ~7,000 lines of Zig.
 
 ## System Overview
 
@@ -15,12 +15,13 @@ agent-cli is a self-contained Zig CLI for LLM-based agent workflows. It runs a m
 │  4. Load/create session                  persistence.zig    │
 │  5. Build messages                        ─┐               │
 │     a. Context system message           context.zig         │
-│     b. Agent system prompt              agent.zig           │
-│     c. .agent.md file (if present)      main.zig            │
-│     d. User message                     (from flags/stdin)  │
-│     e. File attachments                 (from --file)       │
+│     b. Available skills listing         tool.zig            │
+│     c. Agent system prompt (+model suffix) agent.zig       │
+│     d. .agent.md files (if present)     main.zig            │
+│     e. User message                     (from flags/stdin)  │
+│     f. File attachments                 (from --file)       │
 │  6. Print banner                                            │
-│  7. processTurn ← MAIN LOOP             processor.zig       │
+│  7. processTurnWithTools ← MAIN LOOP    processor.zig       │
 │  8. Save session + share                persistence.zig     │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -100,13 +101,13 @@ All modes share the same engine:
 main.zig                    processor.zig
 ────────                    ─────────────
 askExec()  ──────────────►  processAsk()           tools=null, single turn
-planExec() ──────────────►  processAsk()           tools=null, then write PLAN.md
-reviewExec() ────────────►  processAsk()           tools=null, loads session
+planExec() ──────────────►  processTurnWithTools() tools=read-only (read,glob,grep,webfetch)
+reviewExec() ────────────►  processTurnWithTools() tools=read+diff (read,glob,grep,webfetch,snapshot)
 editExec() ──────────────►  processTurnWithTools() tools=filtered(read+write+search)
 runExec()  ──────────────►  processTurnWithTools() tools=all, multi-turn, MCP
 ```
 
-`buildToolDefsFiltered()` in `processor.zig` constructs the constrained tool set for Edit mode by name whitelist. Plan and Review currently use `processAsk()` (tool-free); adding read-only tools to them means switching them to `processTurnWithTools()` with a filtered tool set.
+`buildToolDefsFiltered()` in `processor.zig` constructs the constrained tool set for Edit mode by name whitelist. Plan and Review use `processTurnWithTools()` with filtered read-only tool sets — tools are available for codebase inspection before the LLM responds.
 
 ### What This Model Rejects
 
@@ -161,18 +162,18 @@ runExec()  ──────────────►  processTurnWithTools()
 
 | Module | Lines | Responsibility | Depends On |
 |--------|-------|----------------|------------|
-| `main.zig` | 862 | CLI entrypoint, flag wiring, model resolution, session lifecycle, .agent.md loading, command dispatch | config, llm, session, agent, processor, persistence, context, cli |
-| `config.zig` | 541 | JSONC config file parser, provider config, API key env lookup, agent definitions, MCP server config, permission rules | (std.json) |
+| `main.zig` | 916 | CLI entrypoint, flag wiring, model resolution, session lifecycle, .agent.md loading, command dispatch | config, llm, session, agent, processor, persistence, context, cli |
+| `config.zig` | 606 | JSONC config file parser, provider config, API key env lookup, agent definitions, MCP server config (http/stdio/sse), permission rules | (std.json) |
 | `llm.zig` | 828 | HTTP chat completions client, SSE streaming, JSON response parser, model resolution | config |
-| `processor.zig` | 753 | Multi-turn tool loop (max 25), permission prompt, tool dispatch, compaction, progressive skills, MCP tool integration, bash ! expansion | llm, session, tool, permission, agent, mcp |
+| `processor.zig` | 906 | Multi-turn tool loop (max 25), permission prompt, tool dispatch, compaction, progressive skills, MCP tool integration, bash ! expansion, stop hook | llm, session, tool, permission, agent, mcp |
 | `tool.zig` | 217 | 14 tool executors (bash, read, write, glob, grep, webfetch, editFile, question, skill, todoWrite, plan, webSearch, snapshot, task) | (std.process, std.Io) |
-| `session.zig` | 158 | In-memory session state (messages, tool results, token counts) | llm |
-| `agent.zig` | 283 | 7 built-in agent definitions and system prompts (build, plan, ask, review, edit, general, research) | (none) |
+| `session.zig` | 167 | In-memory session state (messages, tool results, token counts), loaded skills cache | llm |
+| `agent.zig` | 287 | 8 built-in agent definitions and system prompts (build, plan, ask, edit, review, summary, title, compaction) | (none) |
 | `persistence.zig` | 320 | JSON file save/load for sessions, latest-session pointer | session, llm |
-| `context.zig` | 136 | 7-source system context renderer (Date, OS, Shell, Workspace, Git Info, Env Summary, Tool Help) | tool |
+| `context.zig` | 136 | 7-source system context renderer (Date, OS, Shell, Workspace, Git Info, Env Summary, Tool Help) + bash ! expansion | tool |
 | `permission.zig` | 126 | Glob-based permission rule engine (allow/ask/deny tiers) | (none) |
 | `cli.zig` | 434 | CLI framework (flag parsing, subcommands, help rendering) | (std.process.Init) |
-| `mcp.zig` | 153 | MCP (Model Context Protocol) client — fetch tools from external servers, dispatch tool calls | (std.http) |
+| `mcp.zig` | 503 | MCP client — HTTP/stdio/SSE transports, JSON-RPC dispatch, tools/list + tools/call | (std.http, std.process) |
 | `share.zig` | 57 | Share session to opencode.ai, generates shareable URL | (std.http, types) |
 | `client.zig` | 533 | OpenCode server SDK (not used by `agent run`) | types, sse |
 | `types.zig` | 573 | OpenCode SDK v2 type definitions (not used by `agent run`) | (none) |
@@ -180,16 +181,21 @@ runExec()  ──────────────►  processTurnWithTools()
 
 ## Key Phase 2 Features
 
-### MCP Tool Provider (`mcp.zig`)
-External tools can be loaded from MCP-compatible servers. Configured in `config.json`:
+### MCP Multi-Transport (`mcp.zig`)
+External tools can be loaded from MCP-compatible servers via three transports:
+- **HTTP**: POST JSON-RPC to a URL (`.url` in config, default transport)
+- **Stdio**: Spawn command as child process, communicate via stdin/stdout (`.command` + `.args` in config)
+- **SSE**: Connect to SSE endpoint, discover POST URL via `endpoint` event (`"transport": "sse"` in config)
 - `tools/list` fetches tool definitions at startup
 - `tools/call` dispatches prefixed tool calls (e.g., `mcp_hexmath__hex_add`)
-- Supports multiple MCP servers simultaneously
+- Supports multiple MCP servers simultaneously, mixed transports
 
 ### Progressive Skills (`processor.zig`)
 Skills are loaded lazily to keep system prompts compact:
-- Initial load: skill name + description only (compact mode)
-- On first use: full skill body loaded and added to messages
+- Initial load: skill name + description only (metadata listing at startup)
+- On first use: full skill body loaded and injected as a **system message** (persists through compaction)
+- Auto-load: any tool whose name matches a skill file triggers automatic skill body injection
+- Dedup: `session.loaded_skills` cache prevents re-loading within a session
 - Source: `.agent/skills/` or `~/.config/agent/skills/`
 
 ### .agent.md Loading (`main.zig`)
