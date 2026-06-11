@@ -264,7 +264,7 @@ pub fn askExec(cmd: *cli.Cmd) !void {
 
     var md_renderer: ?markdown.MdRenderer = null;
     const on_token: ?llm.OnToken = if (!state.raw and !state.format_json) blk: {
-        md_renderer = markdown.MdRenderer.init(allocator, cmd.writer);
+        md_renderer = try markdown.MdRenderer.init(allocator, cmd.writer);
         break :blk llm.OnToken{ .context = @ptrCast(&md_renderer.?), .callback = mdOnTokenFeed };
     } else null;
     defer if (md_renderer) |*r| r.deinit();
@@ -305,7 +305,7 @@ pub fn planExec(cmd: *cli.Cmd) !void {
 
     var md_renderer: ?markdown.MdRenderer = null;
     const on_token: ?llm.OnToken = if (!state.raw and !state.format_json) blk: {
-        md_renderer = markdown.MdRenderer.init(allocator, cmd.writer);
+        md_renderer = try markdown.MdRenderer.init(allocator, cmd.writer);
         break :blk llm.OnToken{ .context = @ptrCast(&md_renderer.?), .callback = mdOnTokenFeed };
     } else null;
     defer if (md_renderer) |*r| r.deinit();
@@ -358,7 +358,7 @@ pub fn reviewExec(cmd: *cli.Cmd) !void {
     var state = try setupExec(cmd, "review", "review");
     defer state.deinit(allocator);
 
-    var sb = std.ArrayList(u8).initCapacity(allocator, 4096) catch unreachable;
+    var sb = try std.ArrayList(u8).initCapacity(allocator, 4096);
     defer sb.deinit(allocator);
     try sb.appendSlice(allocator, "Review the following conversation session and provide a concise assessment:\n\n");
     for (target_session.messages.items) |msg| {
@@ -387,7 +387,7 @@ pub fn reviewExec(cmd: *cli.Cmd) !void {
 
     var md_renderer: ?markdown.MdRenderer = null;
     const on_token: ?llm.OnToken = if (!state.raw and !state.format_json) blk: {
-        md_renderer = markdown.MdRenderer.init(allocator, cmd.writer);
+        md_renderer = try markdown.MdRenderer.init(allocator, cmd.writer);
         break :blk llm.OnToken{ .context = @ptrCast(&md_renderer.?), .callback = mdOnTokenFeed };
     } else null;
     defer if (md_renderer) |*r| r.deinit();
@@ -426,7 +426,7 @@ pub fn editExec(cmd: *cli.Cmd) !void {
 
     var md_renderer: ?markdown.MdRenderer = null;
     const on_token: ?llm.OnToken = if (!state.raw and !state.format_json) blk: {
-        md_renderer = markdown.MdRenderer.init(allocator, cmd.writer);
+        md_renderer = try markdown.MdRenderer.init(allocator, cmd.writer);
         break :blk llm.OnToken{ .context = @ptrCast(&md_renderer.?), .callback = mdOnTokenFeed };
     } else null;
     defer if (md_renderer) |*r| r.deinit();
@@ -474,7 +474,7 @@ pub fn runExec(cmd: *cli.Cmd) !void {
 
     var md_renderer: ?markdown.MdRenderer = null;
     const on_token: ?llm.OnToken = if (!state.raw and !state.format_json) blk: {
-        md_renderer = markdown.MdRenderer.init(allocator, cmd.writer);
+        md_renderer = try markdown.MdRenderer.init(allocator, cmd.writer);
         break :blk llm.OnToken{ .context = @ptrCast(&md_renderer.?), .callback = mdOnTokenFeed };
     } else null;
     defer if (md_renderer) |*r| r.deinit();
@@ -667,23 +667,23 @@ pub fn configInitExec(cmd: *cli.Cmd) !void {
 
 // ── Model resolution ────────────────────────────────────────────────────────
 
-fn builtinOpencodeProvider(allocator: std.mem.Allocator, model_id: []const u8) ModelResolution {
+fn builtinOpencodeProvider(allocator: std.mem.Allocator, model_id: []const u8) !ModelResolution {
     const prov_cfg = config_mod.ProviderConfig{
-        .name = allocator.dupe(u8, "OpenCode Zen") catch unreachable,
-        .npm = allocator.dupe(u8, "@ai-sdk/openai-compatible") catch unreachable,
+        .name = try allocator.dupe(u8, "OpenCode Zen"),
+        .npm = try allocator.dupe(u8, "@ai-sdk/openai-compatible"),
         .options = .{
-            .baseURL = allocator.dupe(u8, "https://opencode.ai/zen/v1") catch unreachable,
+            .baseURL = try allocator.dupe(u8, "https://opencode.ai/zen/v1"),
         },
         .models = null,
     };
     const api_key_env = std.c.getenv("OPENCODE_API_KEY");
     const api_key = if (api_key_env) |k|
-        (allocator.dupe(u8, std.mem.span(k)) catch null)
+        (try allocator.dupe(u8, std.mem.span(k)))
     else
         null;
     return ModelResolution{
-        .provider_id = allocator.dupe(u8, "opencode") catch unreachable,
-        .model_id = allocator.dupe(u8, model_id) catch unreachable,
+        .provider_id = try allocator.dupe(u8, "opencode"),
+        .model_id = try allocator.dupe(u8, model_id),
         .api_key = api_key,
         .prov_cfg = prov_cfg,
         .owned_prov_cfg = true,
@@ -699,7 +699,7 @@ pub fn resolveModelProvider(allocator: std.mem.Allocator, config: *const config_
         const model_id = model_str[slash + 1 ..];
 
         if (std.mem.eql(u8, provider_id, "opencode")) {
-            return builtinOpencodeProvider(allocator, model_id);
+            return try builtinOpencodeProvider(allocator, model_id);
         }
 
         const providers = config.provider orelse return error.NoProviders;
@@ -719,7 +719,7 @@ pub fn resolveModelProvider(allocator: std.mem.Allocator, config: *const config_
     }
 
     if (config.provider == null or config.provider.?.count() == 0) {
-        return builtinOpencodeProvider(allocator, "deepseek-v4-flash-free");
+        return try builtinOpencodeProvider(allocator, "deepseek-v4-flash-free");
     }
 
     const providers = config.provider.?;
@@ -743,7 +743,7 @@ pub fn resolveModelProvider(allocator: std.mem.Allocator, config: *const config_
             }
         }
     }
-    return builtinOpencodeProvider(allocator, "deepseek-v4-flash-free");
+    return try builtinOpencodeProvider(allocator, "deepseek-v4-flash-free");
 }
 
 fn resolveApiKey(allocator: std.mem.Allocator, provider_id: []const u8) !?[]const u8 {

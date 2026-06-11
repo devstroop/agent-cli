@@ -97,7 +97,7 @@ pub const Cmd = struct {
     pub fn addSub(self: *Cmd, sub: *Cmd) !void {
         sub.parent = self;
         const name = try self.allocator.dupe(u8, sub.options.name);
-        self.subcommands.put(name, sub) catch unreachable;
+        try self.subcommands.put(name, sub);
     }
 
     pub fn flag(self: *Cmd, flag_name: []const u8, comptime T: type) T {
@@ -183,7 +183,11 @@ pub const Cmd = struct {
                         try self.writer.print("Invalid value for flag --{s}: '{s}'\n", .{ fname, val });
                         try self.writer.flush();
                         std.process.exit(1);
-                    }) catch {};
+                    }) catch |err| {
+                        try self.writer.print("Failed to store flag --{s}: {}\n", .{ fname, err });
+                        try self.writer.flush();
+                        std.process.exit(1);
+                    };
                     _ = args.orderedRemove(0);
                 } else {
                     const fname = arg[2..];
@@ -196,13 +200,13 @@ pub const Cmd = struct {
                         if (args.items.len > 1) {
                             const nxt = args.items[1];
                             if (std.mem.eql(u8, nxt, "true") or std.mem.eql(u8, nxt, "false")) {
-                                self.flag_values.put(fd.name, .{ .Bool = std.mem.eql(u8, nxt, "true") }) catch {};
+                                try self.flag_values.put(fd.name, .{ .Bool = std.mem.eql(u8, nxt, "true") });
                                 _ = args.orderedRemove(0);
                                 _ = args.orderedRemove(0);
                                 continue;
                             }
                         }
-                        self.flag_values.put(fd.name, .{ .Bool = true }) catch {};
+                        try self.flag_values.put(fd.name, .{ .Bool = true });
                         _ = args.orderedRemove(0);
                     } else {
                         if (args.items.len < 2) {
@@ -215,7 +219,11 @@ pub const Cmd = struct {
                             try self.writer.print("Invalid value for flag --{s}: '{s}'\n", .{ fname, val });
                             try self.writer.flush();
                             std.process.exit(1);
-                        }) catch {};
+                        }) catch |err| {
+                            try self.writer.print("Failed to store flag --{s}: {}\n", .{ fname, err });
+                            try self.writer.flush();
+                            std.process.exit(1);
+                        };
                         _ = args.orderedRemove(0);
                         _ = args.orderedRemove(0);
                     }
@@ -230,7 +238,7 @@ pub const Cmd = struct {
                         std.process.exit(1);
                     };
                     if (fd.type == .Bool) {
-                        self.flag_values.put(fd.name, .{ .Bool = true }) catch {};
+                        try self.flag_values.put(fd.name, .{ .Bool = true });
                     } else {
                         if (j < shortcuts.len - 1) {
                             try self.writer.print("Flag -{c} ({s}) must be last in group since it expects a value\n", .{ ch, fd.name });
@@ -246,7 +254,11 @@ pub const Cmd = struct {
                             try self.writer.print("Invalid value for flag -{c} ({s}): '{s}'\n", .{ ch, fd.name, args.items[1] });
                             try self.writer.flush();
                             std.process.exit(1);
-                        }) catch {};
+                        }) catch |err| {
+                            try self.writer.print("Failed to store flag -{c} ({s}): {}\n", .{ ch, fd.name, err });
+                            try self.writer.flush();
+                            std.process.exit(1);
+                        };
                         _ = args.orderedRemove(0);
                     }
                 }
